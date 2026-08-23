@@ -1,0 +1,35 @@
+{
+  "name": "weighcore-desktop",
+  "productName": "WeighCore",
+  "version": "1.0.0",
+  "description": "WeighCore weighbridge operations terminal — Electron desktop app with real serial/LAN weight input, IP-camera capture, offline-first storage and hybrid VPS sync. Zero native modules (no compiler required).",
+  "author": "Endel Digital",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64",
+    "pack": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.endeldigital.weighcore",
+    "productName": "WeighCore",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "preload.js", "config.json", "src/**/*", "renderer/**/*", "bin/**/*"],
+    "asar": false,
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "site": { "name": "Chennai Biomining â€” Package 5", "code": "P5", "scaleId": "P5WB2" },
+
+  "//db": "Live SQL Server (integrated security, via .NET SqlClient â€” no driver). The app reads/writes this database like the legacy software.",
+  "db": {
+    "enabled": true,
+    "server": ".\\SVTSQLEXPRESS",
+    "database": "svt_weighbridge"
+  },
+
+  "//edge": "Weight indicator. connection: 'serial' | 'tcp'. Values below were verified live on this PC.",
+  "edge": {
+    "connection": "serial",
+
+    "serial": {
+      "//port": "COM5 = Prolific USB-to-Serial (the weighbridge indicator on this PC). Fallback: COM1.",
+      "port": "COM5",
+      "baudRate": 2400,
+      "dataBits": 8,
+      "stopBits": 1,
+      "parity": "none"
+    },
+
+    "tcp": {
+      "host": "192.168.1.151",
+      "port": 5876
+    },
+
+    "//parse": "Verified live on COM5 @ 2400: each frame is STX + 6 ASCII digits + ETX + CR + LF (10 bytes). e.g. <STX>000220<ETX> => 220 kg. startHex '02' anchors framing on STX.",
+    "parse": {
+      "startChar": "",
+      "startHex": "02",
+      "totalStringLength": 10,
+      "weightStartFrom": 1,
+      "weightLength": 6,
+      "reverse": false,
+      "decimalInString": false,
+      "decimalPointLocation": 0,
+      "format": "0",
+      "stableRepeats": 4,
+      "pollMs": 250
+    }
+  },
+
+  "//cameras": "IP cameras (from the live Camera table). RTSPMJPEG â€” a frame is grabbed from the RTSP sub-stream via bundled ffmpeg, exactly like the legacy VLC snapshot. One entry per physical camera.",
+  "cameras": [
+    {
+      "id": "cam1",
+      "label": "Camera 1",
+      "type": "rtsp",
+      "url": "rtsp://192.168.1.112:554/profile2",
+      "urlAlt": "rtsp://192.168.1.112:554/profile1",
+      "username": "admin",
+      "password": "CHANGE-ME"
+    },
+    {
+      "id": "cam2",
+      "label": "Camera 2",
+      "type": "rtsp",
+      "url": "rtsp://192.168.1.114:554/profile2",
+      "urlAlt": "rtsp://192.168.1.114:554/profile1",
+      "username": "admin",
+      "password": "CHANGE-ME"
+    }
+  ],
+
+  "//sync": "Hybrid backend. Local SQLite is authoritative offline; changes queue in an outbox and push/pull to the VPS when online.",
+  "sync": {
+    "enabled": true,
+    "baseUrl": "https://YOUR-VPS-HOST/api",
+    "apiKey": "CHANGE-ME-DEVICE-TOKEN",
+    "intervalSec": 20,
+    "uploadImages": true
+  },
+
+  "storage": {
+    "//": "Set at runtime to %APPDATA%/WeighCore if left blank.",
+    "dataDir": "",
+    "imagesDir": ""
+  }
+}

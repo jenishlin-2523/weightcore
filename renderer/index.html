@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WeighCore — Weighbridge Operations Platform</title>
+<meta name="description" content="Next-generation weighbridge ERP module — operations terminal, master data, reporting and audit.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚖️</text></svg>">
+<link rel="stylesheet" href="assets/css/app.css">
+<link rel="stylesheet" href="assets/css/weighmast-theme.css">
+</head>
+<body>
+
+<div id="login"></div>
+
+<div class="app" id="app">
+
+  <!-- ───────────────────────── Sidebar ───────────────────────── -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar__brand">
+      <div class="brandmark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none"><path d="M16 4v24M6 11h20M9 11l-4 9a5 5 0 0 0 8 0l-4-9Zm14 0-4 9a5 5 0 0 0 8 0l-4-9Z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="16" cy="28" r="2.4" fill="currentColor"/></svg>
+      </div>
+      <div class="brandmark__text">
+        <strong>WeighCore</strong>
+        <span>Weighbridge Ops</span>
+      </div>
+      <button class="sidebar__collapse" id="btnCollapse" title="Collapse sidebar (Ctrl+B)" aria-label="Collapse sidebar">
+        <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <nav class="nav" id="nav" aria-label="Main"></nav>
+    <div class="sidebar__foot">
+      <div class="edge" id="edgeStatus">
+        <span class="edge__dot"></span>
+        <div class="edge__txt">
+          <strong>Edge Agent</strong>
+          <span id="edgeSub">Connected · COM3</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ───────────────────────── Main ───────────────────────── -->
+  <div class="main">
+    <header class="topbar">
+      <button class="iconbtn topbar__menu" id="btnMobileNav" aria-label="Open navigation">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+
+      <button class="omnibox" id="omnibox">
+        <svg viewBox="0 0 24 24" class="omnibox__icon"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span>Load ticket or vehicle…</span>
+        <kbd>Ctrl</kbd><kbd>K</kbd>
+      </button>
+
+      <div class="topbar__spacer"></div>
+
+      <div class="sitepick" id="sitePick">
+        <label for="siteSelect" class="sr-only">Active site</label>
+        <select id="siteSelect" class="select select--ghost"></select>
+      </div>
+
+      <div class="scalechip" id="scaleChip" title="Connected weighbridge">
+        <span class="scalechip__pulse"></span>
+        <span id="scaleChipName">Scale 2</span>
+        <b id="scaleChipWeight">0 kg</b>
+      </div>
+
+      <button class="iconbtn" id="btnTheme" title="Toggle theme" aria-label="Toggle colour theme">
+        <svg viewBox="0 0 24 24" class="ico-sun"><circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="2" fill="none"/><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6l1.4 1.4m10 10 1.4 1.4m0-12.8-1.4 1.4m-10 10-1.4 1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <svg viewBox="0 0 24 24" class="ico-moon"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" stroke="currentColor" stroke-width="2" fill="none" stroke-linejoin="round"/></svg>
+      </button>
+
+      <button class="iconbtn" id="btnHelp" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+        <svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M6.5 10h.01M9.5 10h.01M12.5 10h.01M15.5 10h.01M18 10h.01M7.5 14h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+
+      <div class="who" id="who">
+        <div class="avatar" id="whoAv">AU</div>
+        <div class="who__txt">
+          <strong id="whoName">Admin User</strong>
+          <span id="whoRole">Administrator</span>
+        </div>
+      </div>
+
+      <button class="iconbtn" id="btnSignOut" title="Sign out" aria-label="Sign out">
+        <svg viewBox="0 0 24 24"><path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h9" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </header>
+
+    <main class="view" id="view" tabindex="-1"></main>
+  </div>
+</div>
+
+<!-- overlays -->
+<div class="scrim" id="scrim"></div>
+<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Details"></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true"></div>
+<div class="palette" id="palette" role="dialog" aria-modal="true" aria-label="Command palette"></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="assets/js/data.js"></script>
+<script src="assets/js/data-live.js"></script>
+<script src="assets/js/ui.js"></script>
+<script src="assets/js/auth.js"></script>
+<script src="assets/js/views-ops.js"></script>
+<script src="assets/js/views-admin.js"></script>
+<script src="assets/js/app.js"></script>
+</body>
+</html>

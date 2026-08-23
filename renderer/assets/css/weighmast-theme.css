@@ -1,0 +1,242 @@
+/* ==========================================================================
+   WEIGHMAST skin for WeighCore
+   Retheme to match the legacy WeighBridge Solution (WEIGHMAST) UI:
+   cyan #4AB8DC identity, squared corners, cyan section bands, classic tables.
+   Loaded AFTER app.css so it overrides the design tokens + key components.
+   ========================================================================== */
+
+/* ---------- palette: force the WEIGHMAST cyan theme in every theme state ---------- */
+:root,
+:root[data-theme="light"],
+:root[data-theme="dark"]{
+  --bg:          #cfe6f2;
+  --surface:     #ffffff;
+  --surface-2:   #eaf6fc;
+  --surface-3:   #d6ecf8;
+  --surface-in:  #ffffff;
+
+  --border:      #b6dcec;
+  --border-2:    #95cbe2;
+
+  --text:        #14242c;
+  --text-2:      #3c5763;
+  --text-3:      #74929f;
+
+  --brand:       #2ea3cc;   /* cyan for text-on-white contrast */
+  --brand-2:     #4ab8dc;   /* the signature WEIGHMAST header cyan */
+  --brand-ink:   #ffffff;
+  --brand-soft:  #e6f4fb;
+  --brand-line:  #a9dcee;
+
+  --ok:#0a7d55;      --ok-soft:#e3f7ee;   --ok-line:#a8e2c9;
+  --warn:#a35b06;    --warn-soft:#fdf1de; --warn-line:#f0cf95;
+  --danger:#d02a30;  --danger-soft:#fdeaea; --danger-line:#f4bcbe;
+  --info:#2ea3cc;    --info-soft:#e6f4fb; --info-line:#a9dcee;
+
+  --grid-line: rgba(20,36,44,.08);
+  --sel: rgba(74,184,220,.18);
+
+  /* squared, classic corners */
+  --r-xs:2px; --r-sm:3px; --r-md:4px; --r-lg:5px; --r-xl:8px; --r-full:999px;
+
+  --shadow-1: 0 1px 2px rgba(20,60,80,.08);
+  --shadow-2: 0 1px 3px rgba(20,60,80,.10), 0 6px 16px -8px rgba(20,60,80,.18);
+  --shadow-3: 0 14px 40px -14px rgba(20,60,80,.30);
+}
+
+body{ background:var(--bg); }
+/* form controls (radios/checkboxes) get the cyan accent, like the legacy app */
+input, select, textarea, [type="radio"], [type="checkbox"]{ accent-color:var(--brand-2); }
+
+/* ---------- sidebar → WEIGHMAST cyan brand panel ---------- */
+.sidebar{ background:var(--surface); border-right:1px solid var(--border); }
+.sidebar__brand{
+  background:var(--brand-2); border-bottom:1px solid #2f9dc2;
+}
+.sidebar__brand .brandmark__text strong,
+.sidebar__brand .brandmark__text span{ color:#fff !important; }
+.sidebar__brand .brandmark{ color:#fff; }
+.sidebar__collapse{ color:#eaf7fd; }
+.sidebar__collapse:hover{ background:rgba(255,255,255,.16); }
+
+.nav__label{ color:var(--text-3); letter-spacing:.04em; }
+.nav__item{ border-radius:3px; color:var(--text-2); }
+.nav__item:hover{ background:var(--surface-3); color:var(--text); }
+.nav__item.is-active{ background:var(--brand-2); color:#fff; box-shadow:none; }
+.nav__item.is-active .nav__ico{ color:#fff; }
+.nav__item.is-active::before{ background:#0d6c8c; }
+.edge{ background:var(--surface-2); border:1px solid var(--border); }
+
+/* ---------- topbar → white header with cyan controls ---------- */
+.topbar{ background:var(--surface); border-bottom:2px solid var(--brand-2); }
+.omnibox{ background:var(--surface-2); border:1px solid var(--border-2); border-radius:3px; }
+.omnibox:hover{ border-color:var(--brand); }
+.iconbtn{ border-radius:3px; }
+.iconbtn:hover{ background:var(--surface-3); color:var(--brand); }
+.select--ghost{ border-radius:3px; }
+
+/* live-weight chip → cyan LCD panel like the big weight display */
+.scalechip{
+  background:var(--brand-2); color:#fff; border:1px solid #2f9dc2; border-radius:4px;
+}
+.scalechip #scaleChipName, .scalechip span{ color:#eaf9ff; }
+.scalechip b{
+  color:#fff; font-family:var(--font-mono); font-weight:700; letter-spacing:.02em;
+  text-shadow:0 0 6px rgba(255,255,255,.35);
+}
+.scalechip__pulse{ background:#eaffff; box-shadow:0 0 0 3px rgba(255,255,255,.28); }
+
+.who__txt strong{ color:var(--text); }
+
+/* ---------- page header → the signature cyan section band ---------- */
+.page-head{
+  background:var(--brand-2); color:#fff;
+  padding:10px 16px; border-radius:4px; margin-bottom:16px;
+  box-shadow:var(--shadow-1); align-items:center;
+}
+.page-title{ color:#fff; font-weight:600; }
+.page-sub{ color:rgba(255,255,255,.88); }
+.page-head .btn:not(.btn--primary){ background:#fff; color:var(--brand); border-color:#fff; }
+.page-head .btn:not(.btn--primary):hover{ background:#eaf7fd; }
+
+/* ---------- buttons → classic cyan ---------- */
+.btn{ border-radius:3px; border:1px solid var(--border-2); background:var(--surface); color:var(--text); font-weight:600; }
+.btn:hover{ background:var(--surface-3); }
+.btn--primary{ background:var(--brand-2); color:#fff; border-color:#2f9dc2; }
+.btn--primary:hover{ background:#33a6ce; }
+.btn--ghost{ background:transparent; border-color:var(--border-2); }
+.btn--danger{ background:var(--danger); color:#fff; border-color:var(--danger); }
+
+/* ---------- cards & tables → classic cyan headers ---------- */
+.card{ border-radius:5px; border:1px solid var(--border); }
+.card__head{ background:var(--surface-2); border-bottom:1px solid var(--border); border-radius:5px 5px 0 0; }
+.card__title{ color:var(--brand); }
+
+.tablewrap{ border-radius:5px; border:1px solid var(--border); }
+table thead th{
+  background:var(--brand-2) !important; color:#fff !important;
+  border-bottom:1px solid #2f9dc2; font-weight:600;
+}
+table tbody tr:hover{ background:var(--surface-2); }
+table tbody td{ border-bottom:1px solid var(--border); }
+
+/* KPI tiles */
+.kpi{ border-radius:5px; border:1px solid var(--border); background:var(--surface); }
+.kpi__value{ color:var(--brand); }
+
+/* inputs */
+input[type="text"], input[type="search"], input[type="number"], input[type="date"], select, textarea{
+  border-radius:3px !important;
+}
+
+/* badges/pills a touch squarer */
+.badge, .pill, .chip{ border-radius:3px; }
+
+/* tabs (Receipt Details / Captured Images style) */
+.tab, [role="tab"]{ border-radius:4px 4px 0 0; }
+.tab.is-active, [role="tab"][aria-selected="true"]{ background:var(--brand-2); color:#fff; }
+
+/* required-field asterisks, matching the legacy red * */
+.req, .required, label .star{ color:#e53935; }
+
+/* ==========================================================================
+   Fixed-height weighment terminal — the legacy create-transaction screen.
+   Everything fits one screen; only the Receipt Details / Captured Images
+   pane scrolls.
+   ========================================================================== */
+.view:has(.termwrap){
+  height:calc(100vh - var(--topbar-h)); overflow:hidden;
+  display:flex; flex-direction:column;
+  padding-top:var(--sp-3); padding-bottom:var(--sp-3);
+}
+.termwrap{ display:flex; flex-direction:column; flex:1; min-height:0; gap:10px; }
+
+/* the cyan "Load by Ticket/Vehicle No" band */
+.termbar{
+  display:flex; align-items:center; gap:10px; flex:none;
+  background:var(--brand-2); border-radius:4px; padding:7px 12px;
+}
+.termbar__label{ color:#fff; font-size:12.6px; font-weight:600; white-space:nowrap; }
+.termbar__scale{ color:#eaf9ff; font-size:12px; font-family:var(--font-mono); }
+.termbar .btn{ background:#fff; color:var(--brand); border-color:#fff; }
+.termbar .btn:hover{ background:#eaf7fd; }
+
+.termwrap .terminal{ flex:1; min-height:0; align-items:stretch; }
+/* keep form-left / camera-right down to 981px — the app breakpoint (1220px)
+   would stack them on 1152-wide weighbridge terminals */
+@media (min-width:981px){
+  .termwrap .terminal{ grid-template-columns:minmax(0,1.04fr) minmax(370px,.96fr); }
+}
+.termwrap .terminal > .stack{ display:flex; flex-direction:column; min-height:0; overflow:hidden; gap:10px; }
+
+/* compact card chrome so the sheet fits an 864-high screen */
+.termwrap .card__head{ padding:8px 14px; }
+.termwrap .card__head .card__sub{ font-size:11px; }
+.termwrap .card__body{ padding:12px 14px; }
+.termwrap .seg__opt{ padding:5px 13px; font-size:12.4px; }
+.termlbl{ min-width:118px; flex:none; font-weight:600; font-size:12.2px; }
+
+/* left: the Transaction Details sheet fills the column; buttons pinned below */
+.termwrap .terminal > .stack > .card:first-child{ flex:1; min-height:0; display:flex; flex-direction:column; }
+.termwrap .terminal > .stack > .card:first-child .card__body{ flex:1; min-height:0; overflow:auto; }
+.termwrap .card__body > .stack{ gap:9px; }
+.termwrap .card__body .hr{ margin:4px 0; }
+
+/* compact inline labels — label left, control right, like the legacy form */
+.termwrap .formgrid--2{ gap:7px 20px; }
+.termwrap .formgrid--2 .field{
+  display:grid; grid-template-columns:118px minmax(0,1fr);
+  align-items:center; column-gap:8px;
+}
+.termwrap .formgrid--2 .field > *{ grid-column:2; min-width:0; }
+.termwrap .formgrid--2 .field > .field__label{
+  grid-column:1; margin:0; justify-self:start; font-weight:600; font-size:12.2px;
+}
+.termwrap .formgrid--2 .input, .termwrap .formgrid--2 select.input{ height:30px; padding-top:2px; padding-bottom:2px; }
+.termwrap .formgrid--2 .field__hint{ margin-top:1px; font-size:10.6px; }
+
+/* right: cameras beside the indicator, then the prev-weights band */
+.termhw{ display:grid; grid-template-columns:1.02fr 1fr; }
+.cams--stack{ grid-template-columns:1fr; border-top:0; border-right:1px solid #1c2740; }
+.cams--stack .cam{ aspect-ratio:auto; height:128px; }
+.termhw__ind{ display:flex; flex-direction:column; min-width:0; }
+.termhw__ind .led{ flex:1; display:flex; flex-direction:column; justify-content:center; padding:var(--sp-4); }
+.termhw__ind .led__value{ font-size:clamp(38px,4.4vw,58px); }
+.termhw__ind .capbar{ padding:0 var(--sp-4) var(--sp-4); flex-wrap:wrap; }
+.termhw__ind .btn--capture{ height:38px; font-size:13px; min-width:170px; }
+.termwrap .recall__cell{ padding:8px 12px; }
+
+/* the tabbed Receipt Details / Captured Images pane is the only scroll area */
+.termwrap .terminal > .stack > .card:last-child{ flex:1; min-height:0; display:flex; flex-direction:column; }
+.termwrap .terminal > .stack > .card:last-child .card__body{ flex:1; min-height:0; overflow:auto; }
+.termwrap .tabs{ position:sticky; top:0; background:var(--surface); z-index:1; }
+.termwrap .receipt{ font-size:12.4px; }
+
+@media (max-width:980px){
+  /* genuinely small screens can't fit one page — fall back to normal scrolling */
+  .view:has(.termwrap){ height:auto; overflow:visible; }
+}
+
+/* ---------- legacy weighment slip (matches the WEIGHMAST printout) ---------- */
+.lslip{
+  background:#fff; color:#111; font-family:'Consolas','Courier New',monospace;
+  font-size:12.5px; line-height:1.75; padding:26px 30px;
+  border:1px solid var(--border); border-radius:6px;
+}
+.lslip__head{ text-align:center; font-family:Arial,Helvetica,sans-serif; }
+.lslip__head h3{ font-size:17px; font-weight:800; letter-spacing:.4px; text-transform:uppercase; }
+.lslip__head p{ font-size:12px; margin:1px 0; text-transform:uppercase; }
+.lslip__pt{ text-align:center; margin:8px 0 10px; }
+.lslip__cols{ display:grid; grid-template-columns:1fr 1fr; gap:0 36px; }
+.lslip__r{ display:flex; }
+.lslip__r dt{ width:130px; flex:none; font-weight:700; }
+.lslip__r dd{ margin:0; overflow-wrap:anywhere; }
+.lslip__rule{ border:0; border-top:1.6px solid #111; margin:10px 0; }
+.lslip__shots{ display:grid; grid-template-columns:1fr 1fr; gap:18px 24px; margin:16px 0 8px; }
+.lslip__shot{ margin:0; }
+.lslip__shot img{ width:100%; display:block; border:1px solid #999; }
+.lslip__shot figcaption{ text-align:center; font-size:11.5px; margin-top:4px; }
+.lslip__foot{ display:flex; align-items:flex-end; margin-top:30px; }
+.lslip__sig{ margin-left:auto; text-align:center; font-weight:700; }
+.lslip__sig .line{ border-top:1.4px solid #111; width:190px; margin-bottom:4px; }
+@media print{ .lslip{ border:0; border-radius:0; } }

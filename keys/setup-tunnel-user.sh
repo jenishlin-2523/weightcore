@@ -2,7 +2,7 @@
 # Create a locked-down, forwarding-only SSH user for WeighCore terminals.
 # The key may ONLY forward to the SQL port; no shell, no other access.
 set -e
-PUB='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGdErhRC9HPy72gKW/j1v9cDw0/cF6IIxjffCdh70jRm wctunnel@weighcore'
+PUB='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICQp4MeFHCgaUkeNJKJSXueEZRUAYYPV3hVj5O4N5sON wctunnel@P5WB2'
 id wctunnel >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin -m -d /home/wctunnel wctunnel
 install -d -m 700 -o wctunnel -g wctunnel /home/wctunnel/.ssh
 AK=/home/wctunnel/.ssh/authorized_keys

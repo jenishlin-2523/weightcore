@@ -79,7 +79,7 @@ function transform(raw) {
   }));
   const products = raw.products.map((p) => ({
     id: 'P' + p.ProductID, name: s(p.ProductName), code: s(p.ProductCode), desc: s(p.Notes),
-    unit: 'MT', rate: 0, active: bool(p.IsActive)
+    unit: 'MT', rate: 0, txnType: s(p.TransactionType), active: bool(p.IsActive)
   }));
   const accounts = raw.accounts.map((a) => {
     const nm = s(a.CompanyName) || (s(a.FirstName) + ' ' + s(a.LastName)).trim();
@@ -156,7 +156,9 @@ function transform(raw) {
       rid: s(t.ReceiptTicketID) || null,
       productId: prodId ? ('P' + prodId) : null, gateId: gateId ? ('G' + gateId) : null, charges: num(t.Charges),
       tare, tareAt: tp ? (tp.TareTime || tp.CaptureTime) : null, gross, grossAt: gp ? (gp.GrossTime || gp.CaptureTime) : null,
-      net, passes, cf: {}, manual: ds.some((d) => bool(d.IsCapturedManual)), operatorId: t.CreatedBy ? ('US' + t.CreatedBy) : null, voidReason: null
+      net, passes,
+      cf: { cf1: s(t.CustomField1), cf2: s(t.CustomField2), cf3: s(t.CustomField3), cf4: s(t.CustomField4), cf5: s(t.CustomField5) },
+      manual: ds.some((d) => bool(d.IsCapturedManual)), operatorId: t.CreatedBy ? ('US' + t.CreatedBy) : null, voidReason: null
     };
   }).sort((a, b) => new Date(b.at) - new Date(a.at));
 
@@ -227,7 +229,7 @@ async function saveTicket(cfg, t) {
   } else {
     allocate = 'SELECT ISNULL(MAX(TicketID),0)+1 FROM TransactionData';
     if (t.ticketNo) tid = num(t.ticketNo);
-    statements.push(`INSERT INTO TransactionData (TicketID,VehicleID,DriverID,AccountID,TransporterID,Status,TransactionMode,TransactionType,PlantDirectionType,ReceiptTicketID,Charges,CreationTime,CreatedBy,VehicleNumber,DriverName,TransporterName,AccountName) VALUES ({TID},${NN(t.vehicleId)},${NN(t.driverId)},${NN(t.accountId)},${NN(t.transporterId)},${S(t.status || 'Complete')},${S(t.mode || 'Double')},${S(t.transactionType || 'Incoming')},${NS(t.direction)},${S(rid)},${num(t.charges)},${S(now)},${NN(t.createdBy)},${S(t.vehicleNo)},${NS(t.driverName)},${NS(t.transporterName)},${NS(t.accountName)})`);
+    statements.push(`INSERT INTO TransactionData (TicketID,VehicleID,DriverID,AccountID,TransporterID,Status,TransactionMode,TransactionType,PlantDirectionType,ReceiptTicketID,Charges,CreationTime,CreatedBy,VehicleNumber,DriverName,TransporterName,AccountName,CustomField1,CustomField2,CustomField3,CustomField4,CustomField5) VALUES ({TID},${NN(t.vehicleId)},${NN(t.driverId)},${NN(t.accountId)},${NN(t.transporterId)},${S(t.status || 'Complete')},${S(t.mode || 'Double')},${S(t.transactionType || 'Incoming')},${NS(t.direction)},${S(rid)},${num(t.charges)},${S(now)},${NN(t.createdBy)},${S(t.vehicleNo)},${NS(t.driverName)},${NS(t.transporterName)},${NS(t.accountName)},${NS(t.cf1)},${NS(t.cf2)},${NS(t.cf3)},${NS(t.cf4)},${NS(t.cf5)})`);
   }
   (t.passes || []).forEach((p, i) => statements.push(detailSql(p, i)));
 
@@ -265,7 +267,7 @@ const MASTERS_SQL = {
     return { FirstName: S(first), LastName: NS(last), IDProofNo: NS(f.licence),
       AccountID: NN(f.accountId), Active: f.active === false ? 0 : 1 }; } },
   products: { table: 'Product', pk: 'ProductID', map: (f) => ({
-    ProductName: S(f.name), ProductCode: NS(f.code), Notes: NS(f.desc), IsActive: f.active === false ? 0 : 1 }) },
+    ProductName: S(f.name), ProductCode: NS(f.code), Notes: NS(f.desc), TransactionType: NS(f.txnType), IsActive: f.active === false ? 0 : 1 }) },
   gates: { table: 'Gate', pk: 'GateID', map: (f) => ({
     GateName: S(f.name), GateType: S(f.type || 'BOTH'), IsActive: f.active === false ? 0 : 1 }) },
   units: { table: 'Unit', pk: 'UnitID', map: (f) => ({ UnitName: S(f.name) }) },
@@ -313,4 +315,13 @@ async function authenticate(cfg, username, password) {
   return { ok: true, user: { id: 'US' + u.UserID, username: u.UserName, first, last, name, roleId, siteId: null, active: true } };
 }
 
-module.exports = { snapshot, nextTicketNo, saveTicket, saveVehicle, saveMaster, authenticate, createSalt };
+/** Persist one capture photo (a JPEG file on disk) into the local TransactionImage table. */
+async function saveImage(cfg, img) {
+  const args = ['-File', path.join(__dirname, 'wb-image.ps1'), '-Server', cfg.server, '-Database', cfg.database,
+    '-ScaleID', String(img.scaleId || ''), '-Rid', String(img.rid || ''), '-TicketID', String(img.ticketNo || 0),
+    '-CameraID', String(img.cameraId || ''), '-Seq', String(img.seq || 0), '-Kind', String(img.kind || ''), '-File', String(img.file || '')];
+  try { const out = await runPs(args, 20000); return { ok: /OK/.test(out || '') }; }
+  catch (e) { return { ok: false, error: e.message }; }
+}
+
+module.exports = { snapshot, nextTicketNo, saveTicket, saveVehicle, saveMaster, authenticate, createSalt, saveImage };

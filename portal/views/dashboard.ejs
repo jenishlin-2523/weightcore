@@ -1,0 +1,58 @@
+<%- include('partials/head', { title: 'Dashboard — WeighCore Admin', heading: 'Dashboard', page: page, user: user }) %>
+
+<% function n(x){ return (x==null?0:x).toLocaleString('en-IN'); } %>
+<% function t(x){ return (x==null? '—' : Number(x).toLocaleString('en-IN',{minimumFractionDigits:3,maximumFractionDigits:3})); } %>
+<% function dt(x){ if(!x) return '—'; var d=new Date(x); if(isNaN(d)) return '—'; var M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; var p=function(v){return(v<10?'0':'')+v;}; var h=d.getUTCHours(),a=h<12?'AM':'PM'; h=h%12||12; return p(d.getUTCDate())+' '+M[d.getUTCMonth()]+' '+d.getUTCFullYear()+', '+p(h)+':'+p(d.getUTCMinutes())+' '+a; } %>
+
+<div class="kpis">
+  <div class="kpi brand"><div class="v"><%= n(kpis.total) %></div><div class="l">Total Transactions</div></div>
+  <div class="kpi warn"><div class="v"><%= n(kpis.active) %></div><div class="l">Active (mid-cycle)</div></div>
+  <div class="kpi ok"><div class="v"><%= n(kpis.complete) %></div><div class="l">Complete</div></div>
+  <div class="kpi"><div class="v"><%= n(kpis.today) %></div><div class="l">Today</div></div>
+  <div class="kpi"><div class="v"><%= t(kpis.netTons) %></div><div class="l">Net Weight (Tons)</div></div>
+  <div class="kpi"><div class="v"><%= n(kpis.vehicles) %></div><div class="l">Vehicles</div></div>
+</div>
+
+<div class="sites">
+  <% bySite.forEach(function(s){ %>
+    <div class="site">
+      <div class="n"><%= s.site %></div>
+      <div class="row"><span>Tickets</span><b><%= n(s.tickets) %></b></div>
+      <div class="row"><span>Complete / Active</span><b><%= n(s.complete) %> / <%= n(s.active) %></b></div>
+      <div class="row"><span>Net (Tons)</span><b><%= t(s.netTons) %></b></div>
+    </div>
+  <% }); %>
+</div>
+
+<div class="card">
+  <div class="h"><b>Recent Weighments</b><span class="r">latest <%= recent.length %> · all sites</span></div>
+  <div class="b">
+    <div class="tblwrap">
+    <table>
+      <thead><tr>
+        <th>Site</th><th>Ticket</th><th>Date/Time</th><th>Vehicle</th><th>Product</th>
+        <th>Type</th><th class="num">Gross (T)</th><th class="num">Tare (T)</th><th class="num">Net (T)</th><th>Status</th>
+      </tr></thead>
+      <tbody>
+      <% if(!recent.length){ %><tr><td colspan="10" class="empty">No transactions yet.</td></tr><% } %>
+      <% recent.forEach(function(r){ %>
+        <tr>
+          <td><span class="site-tag"><%= r.site %></span></td>
+          <td><a href="/slip/<%= r.site %>/<%= r.ticket %>">#<%= r.ticket %></a></td>
+          <td class="muted"><%= dt(r.at) %></td>
+          <td><%= r.vehicle || '—' %></td>
+          <td><%= r.product || '—' %></td>
+          <td class="muted"><%= r.type || '—' %></td>
+          <td class="num"><%= t(r.grossT) %></td>
+          <td class="num"><%= t(r.tareT) %></td>
+          <td class="num"><b><%= t(r.netT) %></b></td>
+          <td><span class="badge <%= r.status %>"><%= r.status %></span></td>
+        </tr>
+      <% }); %>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</div>
+
+<%- include('partials/foot') %>

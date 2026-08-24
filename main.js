@@ -8,20 +8,53 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
+function psExe() { return process.env.SystemRoot ? `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe` : 'powershell.exe'; }
 
 const { EdgeAgent } = require('./src/edge');
 const camera = require('./src/camera');
 const { Store, uuid, now } = require('./src/db');
 const { SyncEngine } = require('./src/sync');
+const { VpsSync } = require('./src/vpssync');
 const sqldb = require('./src/sqldb');
 
 // ---- config + storage paths ----
-const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
-const dataDir   = cfg.storage.dataDir   || path.join(app.getPath('userData'), 'data');
-const imagesDir = cfg.storage.imagesDir || path.join(app.getPath('userData'), 'images');
+// Dev: config.json sits beside the source. Packaged: it must live in a writable
+// machine-wide location (Program Files is read-only for the operator), seeded
+// from the bundled template so a fresh install boots into the Setup wizard.
+const configDir = app.isPackaged ? path.join(process.env.ProgramData || app.getPath('userData'), 'WeighCore') : __dirname;
+const configPath = path.join(configDir, 'config.json');
+const templatePath = path.join(__dirname, 'config.example.json');
+try { fs.mkdirSync(configDir, { recursive: true }); } catch (_) {}
+try { if (!fs.existsSync(configPath) && fs.existsSync(templatePath)) fs.copyFileSync(templatePath, configPath); } catch (_) {}
+function loadConfig() { try { return JSON.parse(fs.readFileSync(configPath, 'utf8').replace(/^﻿/, '')); } catch (_) { return null; } }
+let cfg = loadConfig() || {};
+// The first-run Setup wizard runs until config.setup.complete === true and a scaleId is chosen.
+function needsSetup() { return !cfg.setup || cfg.setup.complete !== true || !(cfg.site && cfg.site.scaleId); }
+function saveConfig(next) { cfg = next; fs.writeFileSync(configPath, JSON.stringify(next, null, 2), 'utf8'); }
+const dataDir   = (cfg.storage && cfg.storage.dataDir)   || path.join(app.getPath('userData'), 'data');
+const imagesDir = (cfg.storage && cfg.storage.imagesDir) || path.join(app.getPath('userData'), 'images');
 fs.mkdirSync(imagesDir, { recursive: true });
+fs.mkdirSync(dataDir, { recursive: true });
 
-let win, edge, store, sync, liveSnapshot = null, lastWeight = { value: 0, unit: 'kg', stable: false };
+// The bundled forwarding-only tunnel key, copied to a writable, permission-locked
+// path the Windows SSH client will accept (it refuses world-readable key files).
+function ensureTunnelKey() {
+  try {
+    const bundled = path.join(__dirname, 'keys', 'wctunnel_key');
+    if (!fs.existsSync(bundled)) return '';
+    const dst = path.join(configDir, 'wctunnel_key');
+    try { if (!fs.existsSync(dst)) fs.copyFileSync(bundled, dst); } catch (_) {}
+    try {
+      const u = process.env.USERNAME || '';
+      require('child_process').execFileSync('icacls', [dst, '/inheritance:r', '/grant:r', u + ':F'], { windowsHide: true, stdio: 'ignore' });
+    } catch (_) {}
+    return dst;
+  } catch (_) { return ''; }
+}
+const tunnelKeyPath = ensureTunnelKey();
+
+let win, edge, store, sync, vpssync, liveSnapshot = null, lastWeight = { value: 0, unit: 'kg', stable: false };
 
 function logLine(msg) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
@@ -33,31 +66,35 @@ function send(channel, payload) {
   try { if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) win.webContents.send(channel, payload); } catch (_) {}
 }
 
-function createWindow() {
-  win = new BrowserWindow({
-    width: 1400, height: 900, minWidth: 1024, minHeight: 680,
-    backgroundColor: '#0f1319',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false            // preload needs Node; renderer stays isolated
-    }
-  });
-  win.removeMenu();
-  win.webContents.on('render-process-gone', (_e, d) => logLine('renderer gone: ' + JSON.stringify(d)));
-  // renderer JS errors land in weighcore.log so field crashes are diagnosable
-  win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
-    if (level >= 3) logLine('renderer error: ' + message + ' (' + String(sourceId).split(/[\\/]/).pop() + ':' + line + ')');
-  });
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  // inject the bridge that connects real weight/camera to the WeighCore UI
-  win.webContents.on('did-finish-load', () => {
-    try {
-      const bridge = fs.readFileSync(path.join(__dirname, 'renderer', 'weighcore-bridge.js'), 'utf8');
-      win.webContents.executeJavaScript(bridge).catch(() => {});
-    } catch (_) {}
-  });
+function createWindow(page) {
+  page = page || 'index.html';
+  if (!win || win.isDestroyed()) {
+    win = new BrowserWindow({
+      width: 1400, height: 900, minWidth: 1024, minHeight: 680,
+      backgroundColor: '#0f1319',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false            // preload needs Node; renderer stays isolated
+      }
+    });
+    win.removeMenu();
+    win.webContents.on('render-process-gone', (_e, d) => logLine('renderer gone: ' + JSON.stringify(d)));
+    // renderer JS errors land in weighcore.log so field crashes are diagnosable
+    win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+      if (level >= 3) logLine('renderer error: ' + message + ' (' + String(sourceId).split(/[\\/]/).pop() + ':' + line + ')');
+    });
+    // inject the bridge into the main UI (not the setup page)
+    win.webContents.on('did-finish-load', () => {
+      if (!/index\.html$/.test(win.webContents.getURL())) return;
+      try {
+        const bridge = fs.readFileSync(path.join(__dirname, 'renderer', 'weighcore-bridge.js'), 'utf8');
+        win.webContents.executeJavaScript(bridge).catch(() => {});
+      } catch (_) {}
+    });
+  }
+  win.loadFile(path.join(__dirname, 'renderer', page));
 }
 
 // ---------------------------------------------------------------- edge
@@ -99,17 +136,25 @@ function registerIpc() {
     return r.ok ? { ok: true, dataUrl: r.dataUrl } : r;
   });
   // capture ALL cameras for a ticket, persist to disk + db (the weighbridge pattern)
-  ipcMain.handle('camera:captureForTxn', async (_e, { txnId, seq }) => {
+  ipcMain.handle('camera:captureForTxn', async (_e, opts) => {
+    opts = opts || {};
+    const rid = opts.rid || opts.txnId || null;              // stable transaction id (GUID)
+    const folder = rid || ('T' + (opts.ticketNo || 'loose'));
+    const scaleId = (cfg.site && cfg.site.scaleId) || '';
     const results = [];
     for (const cam of cfg.cameras) {
       const r = await camera.capture(cam);
       if (r.ok) {
         const id = uuid();
-        const rel = path.join(txnId || 'loose', `${id}.jpg`);
-        const abs = path.join(imagesDir, rel);
+        const abs = path.join(imagesDir, folder, `${id}.jpg`);
         fs.mkdirSync(path.dirname(abs), { recursive: true });
         fs.writeFileSync(abs, r.jpeg);
-        if (store) store.upsert('images', { id, txn_id: txnId || null, camera_id: cam.id, seq: seq || 0, file: abs, uploaded: 0, created_at: now() });
+        if (store) store.upsert('images', { id, txn_id: folder, camera_id: cam.id, seq: opts.seq || 0, file: abs, uploaded: 0, created_at: now() });
+        // also persist into local SQL so the photo reaches the ERP portal via sync
+        if (cfg.db && cfg.db.enabled && rid) {
+          try { await sqldb.saveImage(cfg.db, { scaleId, rid, ticketNo: opts.ticketNo, cameraId: cam.id, seq: opts.seq || 0, kind: opts.kind || '', file: abs }); }
+          catch (_) {}
+        }
         results.push({ ok: true, cameraId: cam.id, id, dataUrl: r.dataUrl, file: abs });
       } else {
         results.push({ ok: false, cameraId: cam.id, error: r.error });
@@ -124,15 +169,16 @@ function registerIpc() {
   ipcMain.handle('db:get',    (_e, { entity, id }) => { try { return { ok: true, row: store.get(entity, id) }; } catch (e) { return { ok: false, error: e.message }; } });
 
   // sync / diagnostics
-  ipcMain.handle('sync:now', async () => { if (sync) await sync._tick(); return { ok: true, online: sync ? sync.online : false }; });
+  ipcMain.handle('sync:now', async () => { if (vpssync) vpssync.tick(); if (sync) await sync._tick(); return { ok: true, online: vpssync ? vpssync.online : (sync ? sync.online : false) }; });
   ipcMain.handle('diag', () => ({
     edge: cfg.edge.connection, lastWeight, cameras: cfg.cameras.map((c) => ({ id: c.id, host: c.host })),
-    online: sync ? sync.online : false, dataDir, imagesDir,
+    online: vpssync ? vpssync.online : (sync ? sync.online : false), dataDir, imagesDir,
     dbLoaded: !!liveSnapshot, counts: liveSnapshot ? liveSnapshot._counts : null
   }));
 
   // live SQL data
   ipcMain.on('data:snapshot-sync', (e) => { e.returnValue = liveSnapshot; });   // instant: already loaded at startup
+  ipcMain.on('site:get', (e) => { e.returnValue = (cfg && cfg.site) || null; });  // this terminal's scaleId — scopes the UI to one weighbridge
   ipcMain.handle('data:refresh', async () => {
     try { liveSnapshot = await sqldb.snapshot(cfg.db); return { ok: true, counts: liveSnapshot._counts }; }
     catch (e) { return { ok: false, error: e.message }; }
@@ -158,33 +204,103 @@ function registerIpc() {
   });
 }
 
+// ---------------------------------------------------------------- setup wizard
+// Quick central check: open a short-lived SSH tunnel and try a SQL connect.
+function testCentral(vps) {
+  return new Promise((resolve) => {
+    const s = vps.ssh || {};
+    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'src', 'wb-testcentral.ps1'),
+      '-SshHost', String(s.host || ''), '-SshUser', String(s.user || 'root'),
+      '-LocalPort', String(s.localPort || 14330), '-RemotePort', String(s.remotePort || 1433),
+      '-Database', String(vps.database || 'svt_weighbridge'), '-SqlUser', String(vps.user || ''), '-SqlPassword', String(vps.password || ''),
+      '-KeyPath', String(tunnelKeyPath || '')];
+    const child = spawn(psExe(), args, { windowsHide: true });
+    let out = '';
+    child.stdout.on('data', (b) => { out += b.toString(); });
+    child.stderr.on('data', (b) => { out += b.toString(); });
+    child.on('error', (e) => resolve({ ok: false, error: e.message }));
+    child.on('close', () => {
+      const ok = /OK:(.*)/.exec(out); if (ok) return resolve({ ok: true, version: ok[1].trim() });
+      const er = /ERR:(.*)/.exec(out); resolve({ ok: false, error: er ? er[1].trim() : 'connection failed' });
+    });
+    setTimeout(() => { try { child.kill(); } catch (_) {} resolve({ ok: false, error: 'timeout' }); }, 22000);
+  });
+}
+
+function registerSetupIpc() {
+  ipcMain.handle('setup:getConfig', () => cfg);
+  ipcMain.handle('setup:serialPorts', async () => {
+    try { const { listPorts } = require('./src/serial-win'); return await listPorts(); } catch (e) { return []; }
+  });
+  ipcMain.handle('setup:testWeight', async (_e, serial) => {
+    return await new Promise((resolve) => {
+      let done = false, agent;
+      const finish = (r) => { if (done) return; done = true; try { agent && agent.stop(); } catch (_) {} resolve(r); };
+      const parse = (cfg.edge && cfg.edge.parse) || { startHex: '02', totalStringLength: 10, weightStartFrom: 1, weightLength: 6, stableRepeats: 4, pollMs: 250 };
+      try {
+        agent = new EdgeAgent({ connection: 'serial', serial, parse });
+        agent.on('weight', (d) => finish({ ok: true, value: d.value, unit: d.unit }));
+        agent.start();
+      } catch (e) { return finish({ ok: false, error: e.message }); }
+      setTimeout(() => finish({ ok: false, error: 'no reading in 6s — check port/baud and that the indicator is streaming' }), 6000);
+    });
+  });
+  ipcMain.handle('setup:testCamera', async (_e, cam) => {
+    try { const r = await camera.capture(cam); return r.ok ? { ok: true, dataUrl: r.dataUrl } : { ok: false, error: r.error }; }
+    catch (e) { return { ok: false, error: e.message }; }
+  });
+  ipcMain.handle('setup:testCentral', async (_e, vps) => { try { return await testCentral(vps); } catch (e) { return { ok: false, error: e.message }; } });
+  ipcMain.handle('setup:save', async (_e, next) => {
+    try {
+      next.setup = { complete: true, at: new Date().toISOString() };
+      saveConfig(next);
+      logLine('setup complete: scaleId=' + ((next.site && next.site.scaleId) || '?'));
+      try { if (cfg.db && cfg.db.enabled) await sqldb.saveMaster(cfg.db, { entity: 'weighbridges', id: null, fields: { name: next.site.scaleId, active: true } }); } catch (_) {}
+      await startBackend();
+      showMain();
+      return { ok: true };
+    } catch (e) { logLine('setup save failed: ' + e.message); return { ok: false, error: e.message }; }
+  });
+}
+
 // ---------------------------------------------------------------- boot
-app.whenReady().then(async () => {
+let backendStarted = false;
+async function startBackend() {
+  if (backendStarted) return; backendStarted = true;
   try { store = new Store(dataDir); } catch (e) { logLine('DB init failed: ' + e.message); }
   try {
     if (cfg.db && cfg.db.enabled) { liveSnapshot = await sqldb.snapshot(cfg.db); logLine('live snapshot ' + JSON.stringify(liveSnapshot._counts)); }
   } catch (e) { logLine('live snapshot failed: ' + e.message); }
-  // The UI's camera list mirrors the cameras this app actually captures from.
   if (liveSnapshot) {
     const wb0 = (liveSnapshot.weighbridges || [])[0] || {};
-    liveSnapshot.cameras = cfg.cameras.map((c, i) => {
+    liveSnapshot.cameras = (cfg.cameras || []).map((c, i) => {
       const host = (String(c.url || '').match(/\/\/(?:[^@/]*@)?([^:/]+)/) || [])[1] || '';
       return { id: 'C' + (i + 1), name: c.label || c.id, type: 'RTSP/MJPEG', url: c.url || '',
         ip: host, port: 554, user: c.username || '', wbId: wb0.id || null, status: 'online', active: true, nativeId: c.id };
     });
   }
   registerIpc();
-  createWindow();
   startEdge();
   camera.setLogger(logLine);
-  try { camera.startStreams(cfg.cameras); } catch (e) { logLine('camera streams failed: ' + e.message); }
-  if (store) {
+  try { camera.startStreams(cfg.cameras || []); } catch (e) { logLine('camera streams failed: ' + e.message); }
+  if (store && cfg.sync && cfg.sync.enabled) {
     sync = new SyncEngine(store, cfg.sync, logLine);
     sync.onState = (s) => { send('sync:status', s); };
     sync.start();
   }
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  if (cfg.vpsSql && cfg.vpsSql.enabled) {
+    vpssync = new VpsSync(cfg.vpsSql, cfg.db, (cfg.site && cfg.site.scaleId) || 'P5WB2', tunnelKeyPath, logLine);
+    vpssync.onState = (s) => { send('sync:status', s); };
+    vpssync.start();
+  }
+}
+function showMain() { createWindow('index.html'); }
+
+app.whenReady().then(async () => {
+  if (needsSetup()) { logLine('first run — showing setup wizard'); registerSetupIpc(); createWindow('setup.html'); }
+  else { await startBackend(); showMain(); }
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(needsSetup() ? 'setup.html' : 'index.html'); });
 });
 
-app.on('window-all-closed', () => { if (edge) edge.stop(); if (sync) sync.stop(); try { camera.stopStreams(); } catch (_) {} if (process.platform !== 'darwin') app.quit(); });
+app.on('window-all-closed', () => { if (edge) edge.stop(); if (sync) sync.stop(); if (vpssync) vpssync.stop(); try { camera.stopStreams(); } catch (_) {} if (process.platform !== 'darwin') app.quit(); });
 process.on('uncaughtException', (e) => logLine('uncaught: ' + (e && e.stack || e)));

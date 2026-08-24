@@ -30,7 +30,7 @@ try {
   }
   $data = [ordered]@{}
   $data.units        = Q "SELECT UnitID,UnitName FROM Unit"
-  $data.products     = Q "SELECT ProductID,ProductName,ProductCode,Notes,IsActive FROM Product"
+  $data.products     = Q "SELECT ProductID,ProductName,ProductCode,Notes,TransactionType,IsActive FROM Product"
   $data.accounts     = Q "SELECT AccountID,AccountCode,CompanyName,FirstName,LastName,ContactNo,IsAccount,IsTransporter,City,Active FROM Account"
   $data.vehicles     = Q "SELECT VehicleID,VehicleNumber,VehicleType,TareWeight,AccountID,IsActive FROM Vehicle"
   $data.drivers      = Q "SELECT DriverID,FirstName,LastName,IDProofNo,AccountID,Active FROM Driver"
@@ -38,7 +38,7 @@ try {
   $data.weighbridges = Q "SELECT WeightBridgeID,ScaleName,MaxCapacity,UnitID,IsActive,COMPort,BaudRate,DataBits,Parity,StopBits FROM WeightBridge"
   $data.users        = Q "SELECT UserID,FirstName,LastName,Email,ContactNo,UserName,TemplateID,Active FROM UserMaster"
   $data.roles        = Q "SELECT TemplateID,TemplateName,Active FROM Template"
-  $data.txns         = Q "SELECT TicketID,DriverID,VehicleID,Status,TransactionMode,AccountID,TransporterID,CONVERT(varchar(40),ReceiptTicketID) AS ReceiptTicketID,Charges,TransactionType,CreationTime,CreatedBy,PlantDirectionType,VehicleNumber,DriverName,TransporterName,AccountName FROM TransactionData"
+  $data.txns         = Q "SELECT TicketID,DriverID,VehicleID,Status,TransactionMode,AccountID,TransporterID,CONVERT(varchar(40),ReceiptTicketID) AS ReceiptTicketID,Charges,TransactionType,CreationTime,CreatedBy,PlantDirectionType,VehicleNumber,DriverName,TransporterName,AccountName,CustomField1,CustomField2,CustomField3,CustomField4,CustomField5 FROM TransactionData"
   $data.details      = Q "SELECT CONVERT(varchar(40),ReceiptTicketID) AS ReceiptTicketID,WeightBridgeID,SequenceNo,ProductID,GrossWeight,TareWeight,GrossTime,TareTime,WeighmentType,GateID,UserID,CaptureWeight,CaptureTime,NetWeight,WeightUnit,IsCapturedManual,WeighbridgeName,ProductName,GateName FROM TransactionDetail"
   $cn.Close()
   [Console]::OutputEncoding = [System.Text.Encoding]::UTF8

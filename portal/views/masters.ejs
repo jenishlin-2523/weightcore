@@ -1,0 +1,26 @@
+<%- include('partials/head', { title: 'Master Data — WeighCore Admin', heading: 'Master Data', page: page, user: user }) %>
+
+<div class="tabs">
+  <% tabs.forEach(function(t){ %>
+    <a href="/masters?tab=<%= t.key %>" class="<%= t.key===tab?'on':'' %>"><%= t.label %></a>
+  <% }); %>
+</div>
+
+<div class="card">
+  <div class="h"><b><%= label %></b><span class="r"><%= rows.length %> records · read-only</span></div>
+  <div class="b"><div class="tblwrap">
+    <table>
+      <thead><tr><% cols.forEach(function(c){ %><th><%= c %></th><% }); %></tr></thead>
+      <tbody>
+      <% if(!rows.length){ %><tr><td colspan="<%= Math.max(1,cols.length) %>" class="empty">No records.</td></tr><% } %>
+      <% rows.forEach(function(r){ %>
+        <tr><% cols.forEach(function(c){ %>
+          <td><% var v=r[c]; %><% if(v==='Active'){ %><span class="badge Complete">Active</span><% }else if(v==='Inactive'){ %><span class="badge Void">Inactive</span><% }else{ %><%= (v==null||v==='')?'—':v %><% } %></td>
+        <% }); %></tr>
+      <% }); %>
+      </tbody>
+    </table>
+  </div></div>
+</div>
+
+<%- include('partials/foot') %>

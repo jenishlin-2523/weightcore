@@ -54,7 +54,7 @@
 
     // capture ALL lane cameras for a ticket, persisted to disk + local db + sync queue
     // returns {ok, results:[{ok, cameraId, id, dataUrl, file}]}
-    captureTicketPhotos: function (txnId, seq) { return wc.captureForTxn(txnId, seq || 0); },
+    captureTicketPhotos: function (opts) { return wc.captureForTxn(opts || {}); },
 
     listCameras:  function () { return wc.listCameras(); },
     probeCameras: function () { return wc.probeCameras(); },

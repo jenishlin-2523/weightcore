@@ -1,0 +1,14 @@
+{
+  "name": "weighcore-portal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WeighCore Admin Portal — unified read-only view of all weighbridge data from the central SQL.",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "ejs": "^3.1.10",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "mssql": "^11.0.1"
+  }
+}

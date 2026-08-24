@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('weighcore', {
 
   // ---- live SQL data ----
   getSnapshot: () => ipcRenderer.sendSync('data:snapshot-sync'),  // instant: preloaded at startup
+  siteInfo: () => { try { return ipcRenderer.sendSync('site:get'); } catch (_) { return null; } },  // { name, code, scaleId }
   data: {
     refresh:    () => ipcRenderer.invoke('data:refresh'),
     nextTicket: () => ipcRenderer.invoke('data:nextTicket'),
@@ -28,6 +29,16 @@ contextBridge.exposeInMainWorld('weighcore', {
     login: (username, password) => ipcRenderer.invoke('auth:login', { username, password })
   },
 
+  // ---- first-run setup wizard ----
+  setup: {
+    getConfig:   () => ipcRenderer.invoke('setup:getConfig'),
+    serialPorts: () => ipcRenderer.invoke('setup:serialPorts'),
+    testWeight:  (serial) => ipcRenderer.invoke('setup:testWeight', serial),
+    testCamera:  (cam) => ipcRenderer.invoke('setup:testCamera', cam),
+    testCentral: (vps) => ipcRenderer.invoke('setup:testCentral', vps),
+    save:        (next) => ipcRenderer.invoke('setup:save', next)
+  },
+
   // ---- live weight edge ----
   onWeight:     (cb) => { listeners.weight.push(cb); return () => {}; },
   onEdgeStatus: (cb) => { listeners.edge.push(cb); return () => {}; },
@@ -37,7 +48,7 @@ contextBridge.exposeInMainWorld('weighcore', {
 
   // ---- cameras ----
   capture:        (cameraId) => ipcRenderer.invoke('camera:capture', cameraId),
-  captureForTxn:  (txnId, seq) => ipcRenderer.invoke('camera:captureForTxn', { txnId, seq }),
+  captureForTxn:  (opts) => ipcRenderer.invoke('camera:captureForTxn', opts || {}),
   probeCameras:   () => ipcRenderer.invoke('camera:probe'),
   listCameras:    () => ipcRenderer.invoke('camera:list'),
 

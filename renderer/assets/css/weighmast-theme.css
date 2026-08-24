@@ -62,9 +62,9 @@ input, select, textarea, [type="radio"], [type="checkbox"]{ accent-color:var(--b
 .nav__label{ color:var(--text-3); letter-spacing:.04em; }
 .nav__item{ border-radius:3px; color:var(--text-2); }
 .nav__item:hover{ background:var(--surface-3); color:var(--text); }
-.nav__item.is-active{ background:var(--brand-2); color:#fff; box-shadow:none; }
-.nav__item.is-active .nav__ico{ color:#fff; }
-.nav__item.is-active::before{ background:#0d6c8c; }
+.nav__item.is-active{ background:var(--brand-soft); color:var(--text); font-weight:650; box-shadow:none; }
+.nav__item.is-active .nav__ico{ color:var(--brand); }
+.nav__item.is-active::before{ background:var(--brand); }
 .edge{ background:var(--surface-2); border:1px solid var(--border); }
 
 /* ---------- topbar → white header with cyan controls ---------- */
@@ -212,9 +212,18 @@ input[type="text"], input[type="search"], input[type="number"], input[type="date
 .termwrap .tabs{ position:sticky; top:0; background:var(--surface); z-index:1; }
 .termwrap .receipt{ font-size:12.4px; }
 
-@media (max-width:980px){
-  /* genuinely small screens can't fit one page — fall back to normal scrolling */
+@media (max-width:980px), (max-height:900px){
+  /* Screens that can't fit the whole terminal on one page — narrow OR short
+     (1366x768 laptops, un-maximised windows) — fall back to natural document
+     scrolling so nothing is crammed or clipped (receipt pane, vehicle dropdown). */
   .view:has(.termwrap){ height:auto; overflow:visible; }
+  .termwrap{ flex:none; }
+  .termwrap .terminal{ min-height:0; }
+  .termwrap .terminal > .stack{ overflow:visible; }
+  .termwrap .terminal > .stack > .card:first-child,
+  .termwrap .terminal > .stack > .card:last-child{ flex:none; min-height:0; }
+  .termwrap .terminal > .stack > .card:first-child .card__body,
+  .termwrap .terminal > .stack > .card:last-child .card__body{ overflow:visible; min-height:0; }
 }
 
 /* ---------- legacy weighment slip (matches the WEIGHMAST printout) ---------- */

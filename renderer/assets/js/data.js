@@ -77,17 +77,17 @@
   ];
 
   const products = [
-    { id: 'P1', name: 'MSW', code: 'MSW', desc: 'Municipal solid waste (raw)', unit: 'MT', rate: 0, active: true },
-    { id: 'P2', name: 'RDF', code: 'RDF', desc: 'Refuse derived fuel', unit: 'MT', rate: 1450, active: true },
-    { id: 'P3', name: 'Inert', code: 'INR', desc: 'Inert / soil fraction', unit: 'MT', rate: 0, active: true },
-    { id: 'P4', name: 'Bio Earth', code: 'BIOE', desc: 'Stabilised bio earth', unit: 'MT', rate: 380, active: true },
-    { id: 'P5', name: 'Trommel Fines', code: 'TRF', desc: 'Screened fines < 20 mm', unit: 'MT', rate: 0, active: true },
-    { id: 'P6', name: 'C&D Waste', code: 'CND', desc: 'Construction & demolition', unit: 'MT', rate: 0, active: true },
-    { id: 'P7', name: 'Scrap Metal', code: 'SCRP', desc: 'Ferrous recovery', unit: 'MT', rate: 18500, active: true },
-    { id: 'P8', name: 'Wood', code: 'WOOD', desc: 'Woody fraction', unit: 'MT', rate: 900, active: true },
-    { id: 'P9', name: 'Stone', code: 'STN', desc: 'Stone / aggregate', unit: 'MT', rate: 0, active: true },
-    { id: 'P10', name: 'Leachate', code: 'LCH', desc: 'Leachate tanker', unit: 'MT', rate: 0, active: true },
-    { id: 'P11', name: 'test', code: 'TEST', desc: '', unit: 'MT', rate: 0, active: true }  // stray test record
+    { id: 'P1', name: 'MSW', code: 'MSW', desc: 'Municipal solid waste (raw)', unit: 'MT', rate: 0, txnType: 'Processing', active: true },
+    { id: 'P2', name: 'RDF', code: 'RDF', desc: 'Refuse derived fuel', unit: 'MT', rate: 1450, txnType: 'RDF', active: true },
+    { id: 'P3', name: 'Inert', code: 'INR', desc: 'Inert / soil fraction', unit: 'MT', rate: 0, txnType: 'Disposal', active: true },
+    { id: 'P4', name: 'Bio Earth', code: 'BIOE', desc: 'Stabilised bio earth', unit: 'MT', rate: 380, txnType: 'Disposal', active: true },
+    { id: 'P5', name: 'Trommel Fines', code: 'TRF', desc: 'Screened fines < 20 mm', unit: 'MT', rate: 0, txnType: 'Processing', active: true },
+    { id: 'P6', name: 'C&D Waste', code: 'CND', desc: 'Construction & demolition', unit: 'MT', rate: 0, txnType: 'Disposal', active: true },
+    { id: 'P7', name: 'Scrap Metal', code: 'SCRP', desc: 'Ferrous recovery', unit: 'MT', rate: 18500, txnType: 'Disposal', active: true },
+    { id: 'P8', name: 'Wood', code: 'WOOD', desc: 'Woody fraction', unit: 'MT', rate: 900, txnType: 'Disposal', active: true },
+    { id: 'P9', name: 'Stone', code: 'STN', desc: 'Stone / aggregate', unit: 'MT', rate: 0, txnType: 'Disposal', active: true },
+    { id: 'P10', name: 'Leachate', code: 'LCH', desc: 'Leachate tanker', unit: 'MT', rate: 0, txnType: 'Disposal', active: true },
+    { id: 'P11', name: 'test', code: 'TEST', desc: '', unit: 'MT', rate: 0, txnType: 'All', active: true }  // stray test record
   ];
 
   const accounts = [

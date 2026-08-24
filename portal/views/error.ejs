@@ -1,0 +1,7 @@
+<%- include('partials/head', { title: 'Error — WeighCore Admin', heading: 'Something went wrong', page: page, user: user }) %>
+<div class="card"><div class="b" style="padding:22px">
+  <p><b>The portal hit an error reading the central database.</b></p>
+  <p class="muted"><%= message %></p>
+  <p><a href="/">← Back to dashboard</a></p>
+</div></div>
+<%- include('partials/foot') %>

@@ -1,0 +1,162 @@
+<%- include('partials/head', { title: 'Transactions — WeighCore Admin', heading: 'Transactions', page: page, user: user }) %>
+
+<% function n(x){ return (x==null?0:x).toLocaleString('en-IN'); } %>
+<% function t(x){ return (x==null? '—' : Number(x).toLocaleString('en-IN',{minimumFractionDigits:3,maximumFractionDigits:3})); } %>
+<% function dt(x){ if(!x) return '—'; var d=new Date(x); if(isNaN(d)) return '—'; var M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; var p=function(v){return(v<10?'0':'')+v;}; var h=d.getUTCHours(),a=h<12?'AM':'PM'; h=h%12||12; return p(d.getUTCDate())+' '+M[d.getUTCMonth()]+' '+d.getUTCFullYear()+', '+p(h)+':'+p(d.getUTCMinutes())+' '+a; } %>
+
+<div class="card filterbar">
+  <div class="fb">
+    <div class="grow"><label>Search</label><input type="text" id="fQ" placeholder="vehicle no, ticket no, driver…" value="<%= f.q||'' %>"></div>
+    <div><label>Site</label><select id="fSite">
+      <option value="all">All sites</option><option value="P5WB1">P5WB1</option><option value="P5WB2">P5WB2</option>
+    </select></div>
+    <div><label>Status</label><select id="fStatus">
+      <option value="all">All</option><option value="Complete">Complete</option><option value="Active">Active</option><option value="Void">Void</option>
+    </select></div>
+    <div><label>Type</label><select id="fType">
+      <option value="all">All</option><option value="Incoming">Incoming</option><option value="Outgoing">Outgoing</option><option value="Both">Both</option>
+    </select></div>
+  </div>
+  <div class="chips">
+    <span class="chip-lbl">Period</span>
+    <button class="chip" data-range="today">Today</button>
+    <button class="chip" data-range="yday">Yesterday</button>
+    <button class="chip" data-range="7">Last 7 days</button>
+    <button class="chip" data-range="30">Last 30 days</button>
+    <button class="chip on" data-range="all">All time</button>
+    <button class="chip" data-range="custom" id="chipCustom">Custom…</button>
+    <span class="chip-sp"></span>
+    <button class="btn ghost" id="btnReset" type="button">Reset</button>
+  </div>
+  <div class="custrange" id="custrange" hidden>
+    <div class="cr"><span>From</span>
+      <input type="date" id="fromD"><select id="fromH" class="tsel"></select><span class="colon">:</span><select id="fromM" class="tsel"></select><select id="fromAP" class="tsel"><option>AM</option><option>PM</option></select>
+    </div>
+    <div class="cr"><span>To</span>
+      <input type="date" id="toD"><select id="toH" class="tsel"></select><span class="colon">:</span><select id="toM" class="tsel"></select><select id="toAP" class="tsel"><option>AM</option><option>PM</option></select>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="h"><b>Transactions</b><span class="r" id="foundLbl"><%= n(total) %> found · page <%= page %> of <%= pages %></span></div>
+  <div class="b"><div class="tblwrap">
+    <table>
+      <thead><tr>
+        <th>Site</th><th>Ticket</th><th>Date/Time</th><th>Vehicle</th><th>Product</th><th>Type</th>
+        <th class="num">Gross (T)</th><th class="num">Tare (T)</th><th class="num">Net (T)</th><th>Status</th><th></th>
+      </tr></thead>
+      <tbody id="txnBody">
+      <% if(!rows.length){ %><tr><td colspan="11" class="empty">No transactions match these filters.</td></tr><% } %>
+      <% rows.forEach(function(r){ %>
+        <tr>
+          <td><span class="site-tag"><%= r.site %></span></td>
+          <td>#<%= r.ticket %></td>
+          <td class="muted"><%= dt(r.at) %></td>
+          <td><%= r.vehicle || '—' %></td>
+          <td><%= r.product || '—' %></td>
+          <td class="muted"><%= r.type || '—' %></td>
+          <td class="num"><%= t(r.grossT) %></td>
+          <td class="num"><%= t(r.tareT) %></td>
+          <td class="num"><b><%= t(r.netT) %></b></td>
+          <td><span class="badge <%= r.status %>"><%= r.status %></span></td>
+          <td><a href="/slip/<%= r.site %>/<%= r.ticket %>">Slip ↗</a></td>
+        </tr>
+      <% }); %>
+      </tbody>
+    </table>
+  </div></div>
+</div>
+
+<div class="pager" id="pager"></div>
+
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id);};
+  var MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var P=function(v){return(v<10?'0':'')+v;};
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+  function jt(x){return x==null?'—':Number(x).toLocaleString('en-IN',{minimumFractionDigits:3,maximumFractionDigits:3});}
+  function jdt(x){if(!x)return'—';var d=new Date(x);if(isNaN(d))return'—';var h=d.getUTCHours(),a=h<12?'AM':'PM';h=h%12||12;return P(d.getUTCDate())+' '+MON[d.getUTCMonth()]+' '+d.getUTCFullYear()+', '+P(h)+':'+P(d.getUTCMinutes())+' '+a;}
+  function ymd(d){return d.getFullYear()+'-'+P(d.getMonth()+1)+'-'+P(d.getDate());}
+
+  // fill custom time selects
+  ['fromH','toH'].forEach(function(id){var s=$(id),o='<option value="">--</option>';for(var h=1;h<=12;h++)o+='<option>'+P(h)+'</option>';s.innerHTML=o;});
+  ['fromM','toM'].forEach(function(id){var s=$(id),o='';for(var m=0;m<60;m++)o+='<option>'+P(m)+'</option>';s.innerHTML=o;});
+
+  var state={from:'',to:''};   // the active period (empty = all time)
+
+  function customVal(dId,hId,mId,apId,defT){
+    var d=$(dId).value; if(!d) return '';
+    var hv=$(hId).value; if(!hv) return d+'T'+defT;
+    var h=parseInt(hv,10),m=$(mId).value||'00',ap=$(apId).value;
+    if(ap==='PM'&&h<12)h+=12; if(ap==='AM'&&h===12)h=0;
+    return d+'T'+P(h)+':'+m;
+  }
+  function query(pg){
+    var p=new URLSearchParams();
+    if(state.from)p.set('from',state.from);
+    if(state.to)p.set('to',state.to);
+    if($('fSite').value!=='all')p.set('site',$('fSite').value);
+    if($('fStatus').value!=='all')p.set('status',$('fStatus').value);
+    if($('fType').value!=='all')p.set('type',$('fType').value);
+    if($('fQ').value.trim())p.set('q',$('fQ').value.trim());
+    if(pg>1)p.set('page',pg);
+    return p.toString();
+  }
+  function rowHtml(r){return '<tr>'+
+    '<td><span class="site-tag">'+esc(r.site)+'</span></td>'+
+    '<td>#'+esc(r.ticket)+'</td>'+
+    '<td class="muted">'+jdt(r.at)+'</td>'+
+    '<td>'+esc(r.vehicle||'—')+'</td>'+
+    '<td>'+esc(r.product||'—')+'</td>'+
+    '<td class="muted">'+esc(r.type||'—')+'</td>'+
+    '<td class="num">'+jt(r.grossT)+'</td><td class="num">'+jt(r.tareT)+'</td><td class="num"><b>'+jt(r.netT)+'</b></td>'+
+    '<td><span class="badge '+esc(r.status)+'">'+esc(r.status)+'</span></td>'+
+    '<td><a href="/slip/'+encodeURIComponent(r.site)+'/'+encodeURIComponent(r.ticket)+'">Slip ↗</a></td></tr>';}
+
+  var seq=0;
+  function load(pg){
+    pg=pg||1; var my=++seq; $('foundLbl').textContent='searching…';
+    fetch('/api/transactions?'+query(pg),{headers:{'Accept':'application/json'}}).then(function(r){return r.json();}).then(function(d){
+      if(my!==seq)return; if(d.error){$('foundLbl').textContent='error';return;}
+      $('txnBody').innerHTML=d.rows.length?d.rows.map(rowHtml).join(''):'<tr><td colspan="11" class="empty">No transactions match these filters.</td></tr>';
+      $('foundLbl').textContent=d.total+' found · page '+d.page+' of '+d.pages;
+      var pg2=''; if(d.pages>1){ if(d.page>1)pg2+='<button class="btn ghost" data-pg="'+(d.page-1)+'">← Prev</button>'; pg2+='<span class="muted">Page '+d.page+' / '+d.pages+'</span>'; if(d.page<d.pages)pg2+='<button class="btn ghost" data-pg="'+(d.page+1)+'">Next →</button>';}
+      $('pager').innerHTML=pg2;
+    }).catch(function(){if(my===seq)$('foundLbl').textContent='error';});
+  }
+
+  function setChip(el){ document.querySelectorAll('.chip').forEach(function(c){c.classList.remove('on');}); if(el)el.classList.add('on'); }
+  function applyRange(kind){
+    var now=new Date();
+    if(kind==='all'){state.from='';state.to='';}
+    else if(kind==='today'){state.from=ymd(now)+'T00:00';state.to=ymd(now)+'T23:59';}
+    else if(kind==='yday'){var y=new Date(now.getTime()-864e5);state.from=ymd(y)+'T00:00';state.to=ymd(y)+'T23:59';}
+    else if(kind==='7'){var s=new Date(now.getTime()-6*864e5);state.from=ymd(s)+'T00:00';state.to=ymd(now)+'T23:59';}
+    else if(kind==='30'){var s=new Date(now.getTime()-29*864e5);state.from=ymd(s)+'T00:00';state.to=ymd(now)+'T23:59';}
+  }
+  document.querySelectorAll('.chip').forEach(function(c){
+    c.addEventListener('click',function(){
+      var kind=c.dataset.range;
+      if(kind==='custom'){ var cr=$('custrange'); cr.hidden=!cr.hidden; setChip(c); return; }
+      $('custrange').hidden=true; setChip(c); applyRange(kind); load(1);
+    });
+  });
+  // custom controls -> update period, mark Custom chip active
+  ['fromD','fromH','fromM','fromAP','toD','toH','toM','toAP'].forEach(function(id){
+    $(id).addEventListener('change',function(){ state.from=customVal('fromD','fromH','fromM','fromAP','00:00'); state.to=customVal('toD','toH','toM','toAP','23:59'); setChip($('chipCustom')); load(1); });
+  });
+  // other filters keep the current period
+  ['fSite','fStatus','fType'].forEach(function(id){ $(id).addEventListener('change',function(){load(1);}); });
+  var timer=null; $('fQ').addEventListener('input',function(){clearTimeout(timer);timer=setTimeout(function(){load(1);},300);});
+  $('pager').addEventListener('click',function(e){var b=e.target.closest('[data-pg]');if(b)load(parseInt(b.dataset.pg,10));});
+  $('btnReset').addEventListener('click',function(){
+    $('fQ').value='';$('fSite').value='all';$('fStatus').value='all';$('fType').value='all';
+    ['fromD','toD'].forEach(function(id){$(id).value='';}); ['fromH','toH','fromM','toM'].forEach(function(id){$(id).selectedIndex=0;}); $('fromAP').value='AM';$('toAP').value='AM';
+    $('custrange').hidden=true; state.from='';state.to=''; setChip(document.querySelector('.chip[data-range="all"]')); load(1);
+  });
+})();
+</script>
+
+<%- include('partials/foot') %>

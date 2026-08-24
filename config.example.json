@@ -1,4 +1,7 @@
 {
+  "//setup": "Ships false so a fresh install opens the first-run Setup wizard. Set true (with a scaleId) once configured; the wizard does this on Finish.",
+  "setup": { "complete": false },
+
   "site": { "name": "Chennai Biomining â€” Package 5", "code": "P5", "scaleId": "P5WB2" },
 
   "//db": "Live SQL Server (integrated security, via .NET SqlClient â€” no driver). The app reads/writes this database like the legacy software.",
@@ -64,13 +67,25 @@
     }
   ],
 
-  "//sync": "Hybrid backend. Local SQLite is authoritative offline; changes queue in an outbox and push/pull to the VPS when online.",
+  "//sync": "Legacy JSON-outbox/HTTP sync — superseded by vpsSql (SQL-to-SQL). Disabled.",
   "sync": {
-    "enabled": true,
+    "enabled": false,
     "baseUrl": "https://YOUR-VPS-HOST/api",
     "apiKey": "CHANGE-ME-DEVICE-TOKEN",
     "intervalSec": 20,
     "uploadImages": true
+  },
+
+  "//vpsSql": "Central server both bridges push to (SQL-to-SQL over an SSH tunnel). The Setup wizard fills these in per PC. Password left blank in the template — enter it at setup.",
+  "vpsSql": {
+    "enabled": true,
+    "ssh": { "host": "200.141.9.11", "user": "wctunnel", "localPort": 14330, "remotePort": 1433 },
+    "server": "127.0.0.1,14330",
+    "database": "svt_weighbridge",
+    "user": "weighcore",
+    "password": "WeighCoreApp!2026",
+    "intervalSec": 30,
+    "pushWindowDays": 7
   },
 
   "storage": {

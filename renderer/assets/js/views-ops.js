@@ -249,12 +249,28 @@
   /* ======================================================================
      TERMINAL
      ====================================================================== */
+  // This terminal's weighbridge number, taken from its Scale ID
+  // (P5WB2 -> "2", P5WB1 -> "1"). Used to default the "Weighbridge No" field.
+  function wbNumber() {
+    var m = String(window.__TERMINAL_SCALE || '').match(/WB\s*0*(\d+)/i);
+    if (m) return m[1];
+    var c = String((DB.settings && DB.settings.connectedScale) || '').match(/(\d+)\s*$/);
+    return c ? c[1] : '1';
+  }
+
+  // Stable transaction id (GUID) shared by the ticket AND its capture photos, so
+  // the 4 images (2 tare + 2 gross) all link to the same weighment in the DB/ERP.
+  function genRid() {
+    try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID().toUpperCase(); } catch (e) {}
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8); return v.toString(16); }).toUpperCase();
+  }
+
   const TS = {
     mode: 'Double', weighType: 'Gross', txnType: 'Processing', direction: 'Plant to Yard',
     vehicleId: '', transporterId: '', productId: '', gateId: '', driverId: '',
-    cf: { cf1: '', cf2: '', cf3: '', cf4: '', cf5: '', cf6: '' },
+    cf: { cf1: '', cf2: '', cf3: '', cf4: '', cf5: wbNumber(), cf6: '' },
     passes: [], capture: 'auto', manualWeight: '', tab: 'receipt',
-    recallOf: null, live: 0, target: 0, stable: false, ticketNo: null
+    recallOf: null, rid: '', live: 0, target: 0, stable: false, ticketNo: null
   };
   let timer = null, camTimer = null, camIdx = 0, settleAt = 0, weightSub = null, edgeSub = null;
 
@@ -270,8 +286,8 @@
     Object.assign(TS, {
       mode: 'Double', weighType: 'Gross', txnType: 'Processing', direction: 'Plant to Yard',
       vehicleId: '', transporterId: '', productId: '', gateId: '', driverId: '',
-      cf: { cf1: '', cf2: '', cf3: '', cf4: '', cf5: (String(DB.settings.connectedScale || '').match(/\d+/) || ['1'])[0], cf6: '' },
-      passes: [], capture: 'auto', manualWeight: '', recallOf: null, stable: false,
+      cf: { cf1: '', cf2: '', cf3: '', cf4: '', cf5: wbNumber(), cf6: '' },
+      passes: [], capture: 'auto', manualWeight: '', recallOf: null, rid: genRid(), stable: false,
       ticketNo: Math.max.apply(null, DB.transactions.map(t => t.ticketNo)) + 1
     });
   }
@@ -370,7 +386,7 @@
       const masters = [
         vehicleField,
         U.field({ label: 'Transporter', id: 'transporter', req: true, type: 'select', value: TS.transporterId, disabled: lock, options: [{ v: '', t: '— select —' }].concat(transporters().map(a => ({ v: a.id, t: a.name }))) }),
-        U.field({ label: 'Product', id: 'product', req: true, type: 'select', value: TS.productId, disabled: lock, options: [{ v: '', t: '— select —' }].concat(DB.products.filter(p => p.active).map(p => ({ v: p.id, t: p.name }))) }),
+        U.field({ label: 'Product', id: 'product', req: true, type: 'select', value: TS.productId, disabled: lock, options: [{ v: '', t: '— select —' }].concat(DB.products.filter(p => p.active && (!p.txnType || p.txnType === 'All' || p.txnType === TS.txnType)).map(p => ({ v: p.id, t: p.name }))) }),
         U.field({ label: 'Gate', id: 'gate', req: true, type: 'select', value: TS.gateId, disabled: lock, options: [{ v: '', t: '— select —' }].concat(DB.gates.filter(g => g.active).map(g => ({ v: g.id, t: g.name + ' (' + g.type + ')' }))) }),
         U.field({ label: 'Transaction Datetime', id: 'txnAt', type: 'datetime-local', value: U.fInput(DB.NOW), disabled: !DB.settings.enableTxnDateTime || lock })
       ];
@@ -540,6 +556,19 @@
       function repaint() {
         term.innerHTML = self.left() + self.right();
         wireCombo();
+        refreshRecall();
+      }
+
+      // Keep the "Load by Ticket/Vehicle No" list current — a Tare weighment just
+      // saved must appear immediately so the operator can recall it for the Gross.
+      function refreshRecall() {
+        const rec = U.$('#recall', root);
+        if (!rec) return;
+        const open = DB.transactions.filter(t => t.status === 'Active' && t.passes.length);
+        const keep = rec.value;
+        rec.innerHTML = '<option value="">— open tickets —</option>' +
+          open.map(t => '<option value="' + t.id + '">#' + t.ticketNo + ' · ' + esc(vName(t.vehicleId)) + ' · ' + esc(pName(t.productId)) + '</option>').join('');
+        rec.value = (keep && open.some(t => t.id === keep)) ? keep : '';
       }
 
       /* live indicator simulation */
@@ -552,7 +581,9 @@
         }
         return base;
       }
-      TS.target = pickTarget(); TS.live = TS.target;
+      // Demo (browser) only: seed a simulated live weight. The real desktop terminal
+      // must read 0 until the indicator actually sends a value — never a fake number.
+      TS.target = pickTarget(); if (!NATIVE) TS.live = TS.target;
 
       timer = setInterval(() => {
         const now = Date.now();
@@ -636,7 +667,7 @@
           if (key === 'capture') TS.capture = v;
           else if (key === 'mode') TS.mode = v;
           else if (key === 'weighType') { TS.weighType = v; TS.target = pickTarget(); }
-          else if (key === 'txnType') TS.txnType = v;
+          else if (key === 'txnType') { TS.txnType = v; const pp = DB.map.product[TS.productId]; if (pp && pp.txnType && pp.txnType !== 'All' && pp.txnType !== v) TS.productId = ''; }
           else if (key === 'direction') TS.direction = v;
           repaint(); return;
         }
@@ -671,7 +702,8 @@
         if (!rec.value) { resetTS(); repaint(); return; }
         const t = DB.transactions.find(x => x.id === rec.value);
         Object.assign(TS, {
-          recallOf: t.id, mode: t.mode, txnType: t.type, direction: t.direction || 'Plant to Yard',
+          recallOf: t.id, ticketNo: t.ticketNo, rid: t.rid || genRid(),   // keep ticket no + id so Gross photos file under the SAME transaction as the Tare photos
+          mode: t.mode, txnType: t.type, direction: t.direction || 'Plant to Yard',
           vehicleId: t.vehicleId, transporterId: t.transporterId, productId: t.productId,
           gateId: t.gateId, driverId: t.driverId, cf: Object.assign({}, t.cf),
           passes: t.passes.map(p => Object.assign({}, p, { fromDb: !!t.rid })),
@@ -714,7 +746,7 @@
         TS.passes.push(_pass);
         // Grab a real frame from every camera and persist it with the pass.
         if (NATIVE) {
-          window.WeighCoreNative.captureTicketPhotos('T' + (TS.ticketNo || 'live'), _pass.seq).then(res => {
+          window.WeighCoreNative.captureTicketPhotos({ rid: TS.rid, ticketNo: TS.ticketNo, seq: _pass.seq, kind: _pass.kind }).then(res => {
             if (res && res.results) {
               const real = res.results.filter(x => x.ok && x.dataUrl).map(x => x.dataUrl);
               if (real.length) { _pass.images = real; try { repaint(); } catch (e) {} }
@@ -782,7 +814,7 @@
           const newPasses = t.passes.filter(p => !isUpdate || !p.fromDb);
           const payload = {
             update: isUpdate,
-            receiptTicketId: isUpdate ? rec.rid : null,
+            receiptTicketId: TS.rid || (isUpdate ? rec.rid : null),
             ticketNo: isUpdate ? rec.ticketNo : null,   // fresh tickets get MAX+1 inside the DB transaction
             status: finishing ? 'Complete' : 'Active', mode: TS.mode,
             transactionType: ({ Processing: 'Incoming', Disposal: 'Outgoing', RDF: 'Both' })[TS.txnType] || 'Incoming',
@@ -798,6 +830,8 @@
             weightBridgeId: sqlIdOf(wb.id, 'WB'), weighbridgeName: wb.name,
             charges: 0, createdBy: sqlIdOf(me.id, 'US'), userName: me.username || null,
             createdAt: fSqlDT(t.at),
+            cf1: TS.cf.cf1 || null, cf2: TS.cf.cf2 || null, cf3: TS.cf.cf3 || null,
+            cf4: TS.cf.cf4 || null, cf5: TS.cf.cf5 || null,
             passes: newPasses.map((p, i, arr) => ({
               seq: p.seq || (i + 1), kind: p.kind, weight: p.weight, at: fSqlDT(p.at),
               net: (i === arr.length - 1) ? n : null, manual: p.mode === 'Manual'

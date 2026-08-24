@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — WeighCore Admin</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="login">
+  <form class="box" method="post" action="/login">
+    <div class="logo">⚖️</div>
+    <h2>WeighCore Admin</h2>
+    <p>Unified view of all weighbridge data</p>
+    <label>Username</label>
+    <input name="username" autocomplete="username" autofocus required>
+    <label>Password</label>
+    <input name="password" type="password" autocomplete="current-password" required>
+    <% if (error) { %><div class="err"><%= error %></div><% } %>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+</body>
+</html>

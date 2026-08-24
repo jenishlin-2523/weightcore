@@ -4,3 +4,7 @@ bin/ffmpeg.exe
 password.txt
 config.json
 *.log
+
+# tunnel private key (bundled into the installer; never commit to a public repo)
+keys/wctunnel_key
+wctunnel_key

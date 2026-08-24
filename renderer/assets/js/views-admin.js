@@ -100,6 +100,7 @@
         U.field({ label: 'Product name', req: true, value: r.name, id: 'f_name' }) +
         U.field({ label: 'Product code', value: r.code, id: 'f_code' }) +
         U.field({ label: 'Description', value: r.desc, id: 'f_desc', span2: true }) +
+        U.field({ label: 'Transaction type', type: 'select', value: r.txnType || 'All', id: 'f_txnType', hint: 'Which weighment type this product appears under', options: [{ v: 'All', t: 'All types' }, { v: 'Processing', t: 'Processing' }, { v: 'Disposal', t: 'Disposal' }, { v: 'RDF', t: 'RDF' }] }) +
         U.field({ label: 'Reporting unit', type: 'select', value: r.unit, id: 'f_unit', options: DB.units.map(u => ({ v: u.name, t: u.name + ' — ' + u.desc })) }) +
         U.field({ label: 'Rate per MT (₹)', type: 'number', value: r.rate, id: 'f_rate' }) +
         U.field({ label: 'Status', type: 'select', value: String(r.active), id: 'f_active', options: [{ v: 'true', t: 'Active' }, { v: 'false', t: 'Inactive' }] }) +
@@ -279,7 +280,7 @@
           }
           const ed = e.target.closest('[data-edit]');
           if (ed || e.target.closest('[data-new]')) {
-            const rec = ed ? def.data().find(r => r.id === ed.dataset.edit) : {};
+            const rec = (ed ? def.data().find(r => r.id === ed.dataset.edit) : {}) || {};
             openForm(key, def, rec, () => self.paint());
           }
         });

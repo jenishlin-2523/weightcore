@@ -23,8 +23,10 @@
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const fDate = (d) => !d ? '—' : P2(d.getDate()) + '-' + P2(d.getMonth() + 1) + '-' + d.getFullYear();
   const fDay = (d) => !d ? '—' : P2(d.getDate()) + ' ' + MON[d.getMonth()];
-  const fTime = (d) => !d ? '—' : P2(d.getHours()) + ':' + P2(d.getMinutes());
-  const fSec = (d) => !d ? '—' : fTime(d) + ':' + P2(d.getSeconds());
+  const H12 = (d) => { const h = d.getHours() % 12; return h === 0 ? 12 : h; };
+  const AMPM = (d) => d.getHours() < 12 ? 'AM' : 'PM';
+  const fTime = (d) => !d ? '—' : P2(H12(d)) + ':' + P2(d.getMinutes()) + ' ' + AMPM(d);
+  const fSec = (d) => !d ? '—' : P2(H12(d)) + ':' + P2(d.getMinutes()) + ':' + P2(d.getSeconds()) + ' ' + AMPM(d);
   const fDT = (d) => !d ? '—' : fDate(d) + ' ' + fTime(d);
   const fInput = (d) => !d ? '' : d.getFullYear() + '-' + P2(d.getMonth() + 1) + '-' + P2(d.getDate()) + 'T' + P2(d.getHours()) + ':' + P2(d.getMinutes());
 

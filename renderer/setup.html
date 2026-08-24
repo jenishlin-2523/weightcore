@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WeighCore — Terminal Setup</title>
+<style>
+  :root{ --bg:#0f1319; --panel:#171d26; --panel2:#1e2632; --line:#2a3542; --ink:#e7edf5; --sub:#8ea0b5; --accent:#3b82f6; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 "Segoe UI",system-ui,sans-serif; }
+  .wrap{ max-width:860px; margin:0 auto; padding:28px 24px 120px; }
+  .brand{ display:flex; align-items:center; gap:12px; margin-bottom:4px; }
+  .brand h1{ font-size:20px; margin:0; }
+  .brand .tag{ color:var(--sub); font-size:13px; }
+  .lead{ color:var(--sub); margin:2px 0 22px; }
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin:14px 0; }
+  .card h2{ font-size:15px; margin:0 0 4px; display:flex; align-items:center; gap:8px; }
+  .card .hint{ color:var(--sub); font-size:12.5px; margin:0 0 14px; }
+  .num{ display:inline-flex; width:22px; height:22px; border-radius:50%; background:var(--accent); color:#fff; font-size:12px; align-items:center; justify-content:center; }
+  .grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px 16px; }
+  .field{ display:flex; flex-direction:column; gap:5px; }
+  .field.full{ grid-column:1 / -1; }
+  label{ font-size:12px; color:var(--sub); }
+  input,select{ background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:9px 11px; font-size:14px; outline:none; }
+  input:focus,select:focus{ border-color:var(--accent); }
+  .row{ display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+  .btn{ background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:8px 14px; font-size:13px; cursor:pointer; }
+  .btn:hover{ border-color:var(--accent); }
+  .btn.primary{ background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  .btn:disabled{ opacity:.5; cursor:default; }
+  .chip{ font-size:12px; padding:3px 9px; border-radius:999px; border:1px solid var(--line); color:var(--sub); }
+  .chip.ok{ color:var(--ok); border-color:rgba(34,197,94,.4); background:rgba(34,197,94,.08); }
+  .chip.bad{ color:var(--bad); border-color:rgba(239,68,68,.4); background:rgba(239,68,68,.08); }
+  .chip.run{ color:var(--warn); border-color:rgba(245,158,11,.4); }
+  .cam{ border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-top:10px; }
+  .cam .grid{ grid-template-columns:1fr 1fr 1fr; }
+  .thumb{ max-width:180px; border-radius:6px; border:1px solid var(--line); margin-top:8px; display:none; }
+  .foot{ position:fixed; left:0; right:0; bottom:0; background:linear-gradient(180deg,rgba(15,19,25,0),var(--bg) 40%); padding:18px 24px; }
+  .foot .inner{ max-width:860px; margin:0 auto; display:flex; align-items:center; gap:14px; justify-content:flex-end; }
+  .foot .msg{ margin-right:auto; color:var(--sub); font-size:13px; }
+  .pill{ font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--accent); border:1px solid rgba(59,130,246,.4); border-radius:999px; padding:3px 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <span style="font-size:26px">⚖️</span>
+    <div><h1>WeighCore Terminal Setup</h1><div class="tag">First-run configuration for this weighbridge PC</div></div>
+  </div>
+  <p class="lead">Configure this station once. Pick which weighbridge this PC is, point it at the indicator, cameras and central server, then Finish — the terminal remembers it from now on.</p>
+
+  <!-- 1. Site / identity -->
+  <div class="card">
+    <h2><span class="num">1</span> Station identity</h2>
+    <p class="hint">The Scale ID is what tags every ticket so the central/ERP knows which bridge it came from. Choose a different one on each PC.</p>
+    <div class="grid">
+      <div class="field"><label>Site name</label><input id="siteName" placeholder="Chennai Biomining — Package 5"></div>
+      <div class="field"><label>Site code</label><input id="siteCode" placeholder="P5"></div>
+      <div class="field full"><label>This weighbridge is…</label>
+        <select id="scaleId"></select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Weight indicator -->
+  <div class="card">
+    <h2><span class="num">2</span> Weight indicator</h2>
+    <p class="hint">Serial COM port the weighbridge indicator streams on. Use “Test weight” to confirm a live reading.</p>
+    <div class="grid">
+      <div class="field"><label>COM port</label><select id="comPort"></select></div>
+      <div class="field"><label>Baud rate</label>
+        <select id="baud"><option>1200</option><option>2400</option><option>4800</option><option>9600</option><option>19200</option></select>
+      </div>
+    </div>
+    <div class="row"><button class="btn" id="btnWeight">Test weight</button><span class="chip" id="weightChip">not tested</span></div>
+  </div>
+
+  <!-- 3. Cameras -->
+  <div class="card">
+    <h2><span class="num">3</span> Cameras</h2>
+    <p class="hint">One row per lane camera (RTSP). “Test” grabs a single frame. Leave blank if a lane has no camera.</p>
+    <div id="cams"></div>
+  </div>
+
+  <!-- 4. Central / ERP -->
+  <div class="card">
+    <h2><span class="num">4</span> Central server</h2>
+    <p class="hint">The shared SQL server both bridges push to (reached over an SSH tunnel). “Test connection” verifies it end-to-end.</p>
+    <div class="grid">
+      <div class="field"><label>Host / IP</label><input id="vpsHost" placeholder="200.141.9.11"></div>
+      <div class="field"><label>SSH user</label><input id="vpsSshUser" placeholder="root"></div>
+      <div class="field"><label>SQL login</label><input id="vpsSqlUser" placeholder="weighcore"></div>
+      <div class="field"><label>SQL password</label><input id="vpsSqlPass" type="password" placeholder="••••••••"></div>
+    </div>
+    <div class="row"><button class="btn" id="btnCentral">Test connection</button><span class="chip" id="centralChip">not tested</span></div>
+  </div>
+</div>
+
+<div class="foot"><div class="inner">
+  <span class="msg" id="footMsg">Tests are optional — you can Finish without hardware attached.</span>
+  <span class="pill" id="scalePill">—</span>
+  <button class="btn primary" id="btnFinish">Finish setup</button>
+</div></div>
+
+<script>
+const WC = window.weighcore && window.weighcore.setup;
+let base = {};
+const $ = (id) => document.getElementById(id);
+function chip(el, state, text){ el.className = 'chip ' + (state||''); el.textContent = text; }
+
+async function init(){
+  if(!WC){ $('footMsg').textContent = 'Setup bridge unavailable (open inside the app).'; return; }
+  base = (await WC.getConfig()) || {};
+  const site = base.site || {}, edge = base.edge || {}, serial = edge.serial || {}, vps = base.vpsSql || {}, ssh = vps.ssh || {};
+  $('siteName').value = site.name || '';
+  $('siteCode').value = site.code || 'P5';
+  // scale options from code
+  buildScaleOptions(site.code || 'P5', site.scaleId);
+  $('siteCode').addEventListener('input', () => buildScaleOptions($('siteCode').value || 'P5', $('scaleId').value));
+  $('scaleId').addEventListener('change', () => $('scalePill').textContent = $('scaleId').value || '—');
+  // serial
+  $('baud').value = String(serial.baudRate || 2400);
+  await loadPorts(serial.port);
+  // cameras
+  buildCams(base.cameras || []);
+  // central
+  $('vpsHost').value = ssh.host || '';
+  $('vpsSshUser').value = ssh.user || 'root';
+  $('vpsSqlUser').value = vps.user || 'weighcore';
+  $('vpsSqlPass').value = vps.password || '';
+}
+function buildScaleOptions(code, current){
+  const sel = $('scaleId'); sel.innerHTML='';
+  for(const n of [1,2]){ const v = code + 'WB' + n; const o=document.createElement('option'); o.value=v; o.textContent = 'Weighbridge ' + n + '  (' + v + ')'; sel.appendChild(o); }
+  if(current) sel.value = current;
+  $('scalePill').textContent = sel.value || '—';
+}
+async function loadPorts(current){
+  const sel = $('comPort'); sel.innerHTML='';
+  let ports=[]; try{ ports = await WC.serialPorts(); }catch(e){}
+  const opts = (ports && ports.length) ? ports.map(p=>p.path||p.port||p) : [];
+  if(current && !opts.includes(current)) opts.unshift(current);
+  if(!opts.length){ ['COM1','COM3','COM5'].forEach(x=>opts.push(x)); }
+  for(const p of opts){ const o=document.createElement('option'); o.value=p; o.textContent=p; sel.appendChild(o); }
+  if(current) sel.value = current;
+}
+function buildCams(cams){
+  const host = document.getElementById('cams'); host.innerHTML='';
+  const list = cams.length ? cams : [{id:'cam1',label:'Camera 1'},{id:'cam2',label:'Camera 2'}];
+  list.forEach((c,i)=>{
+    const d=document.createElement('div'); d.className='cam'; d.dataset.idx=i;
+    d.innerHTML =
+      '<div class="grid">'+
+      '<div class="field full"><label>'+(c.label||('Camera '+(i+1)))+' — RTSP URL</label><input class="cUrl" value="'+(c.url||'')+'" placeholder="rtsp://192.168.1.112:554/profile2"></div>'+
+      '<div class="field"><label>Username</label><input class="cUser" value="'+(c.username||'admin')+'"></div>'+
+      '<div class="field"><label>Password</label><input class="cPass" type="password" value="'+(c.password||'')+'"></div>'+
+      '<div class="field"><label>&nbsp;</label><div class="row" style="margin:0"><button class="btn cTest">Test</button><span class="chip cChip">not tested</span></div></div>'+
+      '</div><img class="thumb">';
+    d.querySelector('.cTest').addEventListener('click', ()=>testCam(d, c.id||('cam'+(i+1)), c.label||('Camera '+(i+1))));
+    host.appendChild(d);
+  });
+}
+function camFrom(d, id, label){
+  return { id, label, type:'rtsp', url:d.querySelector('.cUrl').value.trim(), urlAlt:'',
+    username:d.querySelector('.cUser').value.trim(), password:d.querySelector('.cPass').value };
+}
+async function testCam(d, id, label){
+  const ch=d.querySelector('.cChip'); chip(ch,'run','testing…');
+  const cam = camFrom(d,id,label);
+  if(!cam.url){ chip(ch,'bad','no URL'); return; }
+  try{ const r=await WC.testCamera(cam); if(r.ok){ chip(ch,'ok','frame OK'); const t=d.querySelector('.thumb'); t.src=r.dataUrl; t.style.display='block'; } else chip(ch,'bad', r.error||'failed'); }
+  catch(e){ chip(ch,'bad', e.message); }
+}
+function serialFrom(){
+  return { port:$('comPort').value, baudRate:Number($('baud').value)||2400, dataBits:8, stopBits:1, parity:'none' };
+}
+$('btnWeight') && $('btnWeight').addEventListener('click', async ()=>{
+  chip($('weightChip'),'run','reading…');
+  try{ const r=await WC.testWeight(serialFrom()); if(r.ok) chip($('weightChip'),'ok', r.value+' '+(r.unit||'kg')); else chip($('weightChip'),'bad', r.error||'no reading'); }
+  catch(e){ chip($('weightChip'),'bad', e.message); }
+});
+function vpsFrom(){
+  const v = JSON.parse(JSON.stringify(base.vpsSql || {}));
+  v.ssh = v.ssh || {}; v.ssh.host = $('vpsHost').value.trim(); v.ssh.user = $('vpsSshUser').value.trim() || 'root';
+  v.ssh.localPort = v.ssh.localPort || 14330; v.ssh.remotePort = v.ssh.remotePort || 1433;
+  v.server = '127.0.0.1,' + v.ssh.localPort; v.database = v.database || 'svt_weighbridge';
+  v.user = $('vpsSqlUser').value.trim(); v.password = $('vpsSqlPass').value;
+  v.enabled = true; v.intervalSec = v.intervalSec || 30; v.pushWindowDays = v.pushWindowDays || 7;
+  return v;
+}
+$('btnCentral') && $('btnCentral').addEventListener('click', async ()=>{
+  chip($('centralChip'),'run','connecting…');
+  try{ const r=await WC.testCentral(vpsFrom()); if(r.ok) chip($('centralChip'),'ok','connected'); else chip($('centralChip'),'bad', r.error||'failed'); }
+  catch(e){ chip($('centralChip'),'bad', e.message); }
+});
+$('btnFinish') && $('btnFinish').addEventListener('click', async ()=>{
+  const next = JSON.parse(JSON.stringify(base));
+  next.site = next.site || {}; next.site.name = $('siteName').value.trim(); next.site.code = $('siteCode').value.trim() || 'P5'; next.site.scaleId = $('scaleId').value;
+  next.edge = next.edge || {}; next.edge.connection = 'serial'; next.edge.serial = Object.assign(next.edge.serial||{}, serialFrom());
+  const camDivs = document.querySelectorAll('.cam');
+  next.cameras = Array.from(camDivs).map((d,i)=>{ const src=(base.cameras||[])[i]||{}; return Object.assign({}, src, camFrom(d, src.id||('cam'+(i+1)), src.label||('Camera '+(i+1)))); }).filter(c=>c.url);
+  next.vpsSql = vpsFrom();
+  $('btnFinish').disabled = true; $('footMsg').textContent = 'Saving…';
+  try{ const r = await WC.save(next); if(!r || !r.ok){ $('footMsg').textContent = 'Save failed: ' + ((r&&r.error)||'unknown'); $('btnFinish').disabled=false; } }
+  catch(e){ $('footMsg').textContent = 'Save failed: ' + e.message; $('btnFinish').disabled=false; }
+});
+init();
+</script>
+</body>
+</html>

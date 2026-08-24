@@ -240,8 +240,19 @@
 
   /* ---------- site selector ---------- */
   function initSite() {
-    $('#siteSelect').innerHTML = '<option value="">All sites</option>' +
-      DB.sites.map(s => '<option value="' + s.id + '">' + esc(s.code) + ' — ' + esc(s.name) + '</option>').join('');
+    const sel = $('#siteSelect');
+    if (window.__TERMINAL_SCALE) {
+      // Single-weighbridge terminal: locked to its own site. No "All sites",
+      // no other weighbridge — cross-site views live in the ERP/admin portal only.
+      sel.innerHTML = DB.sites.map(s => '<option value="' + s.id + '">' + esc(s.code) + ' — ' + esc(s.name) + '</option>').join('');
+      sel.value = DB.sites[0] ? DB.sites[0].id : '';
+      sel.disabled = true;
+      sel.title = 'This terminal is fixed to weighbridge ' + window.__TERMINAL_SCALE;
+    } else {
+      sel.innerHTML = '<option value="">All sites</option>' +
+        DB.sites.map(s => '<option value="' + s.id + '">' + esc(s.code) + ' — ' + esc(s.name) + '</option>').join('');
+      sel.disabled = false;
+    }
     const wb = DB.map.wb[DB.settings.connectedScale] || { name: 'No scale', port: '—' };
     $('#scaleChipName').textContent = wb.name;
     $('#edgeSub').textContent = 'Connected · ' + wb.port;

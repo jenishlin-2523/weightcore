@@ -1,0 +1,70 @@
+<%- include('partials/head', { title: 'Weighment Slip — WeighCore Admin', heading: 'Weighment Slip', page: page, user: user }) %>
+
+<% function t(x){ return (x==null? '—' : Number(x).toLocaleString('en-IN',{minimumFractionDigits:3,maximumFractionDigits:3})+' T'); } %>
+<% function dt(x){ if(!x) return '—'; var d=new Date(x); if(isNaN(d)) return '—'; var M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; var p=function(v){return(v<10?'0':'')+v;}; var h=d.getUTCHours(),a=h<12?'AM':'PM'; h=h%12||12; return p(d.getUTCDate())+' '+M[d.getUTCMonth()]+' '+d.getUTCFullYear()+', '+p(h)+':'+p(d.getUTCMinutes())+':'+p(d.getUTCSeconds())+' '+a; } %>
+
+<div class="sliptools">
+  <a class="btn ghost" href="/transactions">← Back</a>
+  <button class="btn" onclick="window.print()">🖶 Print</button>
+</div>
+
+<div class="slip">
+  <div class="slip-h">
+    <div><div class="slip-title">WEIGHMENT SLIP</div><div class="slip-sub">Chennai Biomining · Package 5</div></div>
+    <div class="slip-site"><span class="site-tag"><%= header.site %></span><div class="slip-ticket">Ticket #<%= header.ticket %></div></div>
+  </div>
+
+  <div class="slip-grid">
+    <div><label>Vehicle No</label><b><%= header.vehicle || '—' %></b></div>
+    <div><label>Transaction Date</label><b><%= dt(header.at) %></b></div>
+    <div><label>Product</label><b><%= header.product || '—' %></b></div>
+    <div><label>Transporter</label><b><%= header.transporter || '—' %></b></div>
+    <div><label>Driver</label><b><%= header.driver || '—' %></b></div>
+    <div><label>Gate</label><b><%= header.gate || '—' %></b></div>
+    <div><label>Type / Mode</label><b><%= (header.type||'—') %> / <%= (header.mode||'—') %></b></div>
+    <div><label>Status</label><b><span class="badge <%= header.status %>"><%= header.status %></span></b></div>
+  </div>
+
+  <table class="slip-w">
+    <tr><td>Gross Weight</td><td class="num"><%= t(header.grossT) %></td><td class="muted"><%= dt(header.grossTime) %></td></tr>
+    <tr><td>Tare Weight</td><td class="num"><%= t(header.tareT) %></td><td class="muted"><%= dt(header.tareTime) %></td></tr>
+    <tr class="net"><td>Net Weight</td><td class="num"><b><%= t(header.netT) %></b></td><td class="muted">Gross − Tare</td></tr>
+  </table>
+
+  <div class="slip-passes">
+    <div class="muted" style="margin:14px 0 6px">Weighings (<%= passes.length %>)</div>
+    <table>
+      <thead><tr><th>Seq</th><th>Type</th><th class="num">Capture (Kg)</th><th class="num">Net (Kg)</th><th>Time</th><th>By</th><th>Mode</th></tr></thead>
+      <tbody>
+      <% passes.forEach(function(p){ %>
+        <tr>
+          <td><%= p.SequenceNo %></td>
+          <td><%= p.WeighmentType || '—' %></td>
+          <td class="num"><%= p.CaptureWeight != null ? Number(p.CaptureWeight).toLocaleString('en-IN') : '—' %></td>
+          <td class="num"><%= p.NetWeight != null ? Number(p.NetWeight).toLocaleString('en-IN') : '—' %></td>
+          <td class="muted"><%= dt(p.CaptureTime || p.GrossTime || p.TareTime) %></td>
+          <td><%= p.UserName || '—' %></td>
+          <td><%= p.manual ? '✱ Manual' : 'Auto' %></td>
+        </tr>
+      <% }); %>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="slip-imgs">
+    <div class="muted" style="margin:16px 0 8px">Capture photos (<%= images.length %>)</div>
+    <% if(!images.length){ %>
+      <div class="muted" style="font-size:13px">No photos captured for this weighment.</div>
+    <% } %>
+    <div class="imgs-grid">
+      <% images.forEach(function(im){ %>
+        <figure class="imgcard">
+          <a href="/image/<%= im.id %>" target="_blank"><img src="/image/<%= im.id %>" loading="lazy" alt="capture"></a>
+          <figcaption><span class="badge <%= /gross/i.test(im.Kind||'')?'Complete':'Active' %>"><%= im.Kind || ('Pass '+im.Seq) %></span> · Camera <%= im.CameraID %></figcaption>
+        </figure>
+      <% }); %>
+    </div>
+  </div>
+</div>
+
+<%- include('partials/foot') %>

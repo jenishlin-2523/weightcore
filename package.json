@@ -20,7 +20,8 @@
     "appId": "com.endeldigital.weighcore",
     "productName": "WeighCore",
     "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["main.js", "preload.js", "config.json", "src/**/*", "renderer/**/*", "bin/**/*"],
+    "files": ["main.js", "preload.js", "config.example.json", "src/**/*", "renderer/**/*", "bin/**/*", "keys/wctunnel_key"],
+    "extraResources": [{ "from": "installer", "to": "installer" }],
     "asar": false,
     "win": {
       "target": [{ "target": "nsis", "arch": ["x64"] }]
@@ -29,7 +30,9 @@
       "oneClick": false,
       "perMachine": true,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WeighCore"
     }
   }
 }

@@ -1,0 +1,49 @@
+<%- include('partials/head', { title: 'Reports — WeighCore Admin', heading: 'Daily Report', page: page, user: user }) %>
+
+<% function n(x){ return (x==null?0:x).toLocaleString('en-IN'); } %>
+<% function t(x){ return (x==null? '0.000' : Number(x).toLocaleString('en-IN',{minimumFractionDigits:3,maximumFractionDigits:3})); } %>
+<% function sel(a,b){ return String(a||'')===String(b)?'selected':''; } %>
+<% var totTickets=0, totNet=0; rows.forEach(function(r){ totTickets+=r.tickets; totNet+=Number(r.netTons)||0; }); %>
+
+<form class="card filterbar" method="get" action="/reports">
+  <div class="fb">
+    <div><label>From</label><input type="date" name="from" value="<%= from %>"></div>
+    <div><label>To</label><input type="date" name="to" value="<%= to %>"></div>
+    <div><label>Site</label><select name="site">
+      <option value="all">All sites</option>
+      <option value="P5WB1" <%= sel(site,'P5WB1') %>>P5WB1</option>
+      <option value="P5WB2" <%= sel(site,'P5WB2') %>>P5WB2</option>
+    </select></div>
+    <div><label>&nbsp;</label><button class="btn" type="submit">Run</button></div>
+  </div>
+</form>
+
+<div class="kpis">
+  <div class="kpi brand"><div class="v"><%= n(totTickets) %></div><div class="l">Tickets in range</div></div>
+  <div class="kpi ok"><div class="v"><%= t(totNet) %></div><div class="l">Net Tons in range</div></div>
+  <div class="kpi"><div class="v"><%= rows.length %></div><div class="l">Day/Site rows</div></div>
+</div>
+
+<div class="card">
+  <div class="h"><b>Daily summary</b><span class="r"><%= from %> → <%= to %></span></div>
+  <div class="b"><div class="tblwrap">
+    <table>
+      <thead><tr><th>Date</th><th>Site</th><th class="num">Tickets</th><th class="num">Complete</th><th class="num">Active</th><th class="num">Net (Tons)</th></tr></thead>
+      <tbody>
+      <% if(!rows.length){ %><tr><td colspan="6" class="empty">No data in this range.</td></tr><% } %>
+      <% rows.forEach(function(r){ %>
+        <tr>
+          <td><%= r.day %></td>
+          <td><span class="site-tag"><%= r.site %></span></td>
+          <td class="num"><%= n(r.tickets) %></td>
+          <td class="num"><%= n(r.complete) %></td>
+          <td class="num"><%= n(r.active) %></td>
+          <td class="num"><b><%= t(r.netTons) %></b></td>
+        </tr>
+      <% }); %>
+      </tbody>
+    </table>
+  </div></div>
+</div>
+
+<%- include('partials/foot') %>

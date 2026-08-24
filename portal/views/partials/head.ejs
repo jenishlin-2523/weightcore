@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title><%= typeof title !== 'undefined' ? title : 'WeighCore Admin' %></title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><span style="font-size:22px">⚖️</span><div><b>WeighCore</b><span>Admin Portal</span></div></div>
+    <nav>
+      <a href="/" class="<%= page==='dashboard'?'on':'' %>">▦&nbsp; Dashboard</a>
+      <a href="/transactions" class="<%= page==='transactions'?'on':'' %>">☷&nbsp; Transactions</a>
+      <a href="/masters" class="<%= page==='masters'?'on':'' %>">▤&nbsp; Master Data</a>
+      <a href="/reports" class="<%= page==='reports'?'on':'' %>">▧&nbsp; Reports</a>
+    </nav>
+    <div class="foot">All weighbridges · live from central</div>
+  </aside>
+  <div class="main">
+    <div class="top">
+      <h1><%= typeof heading !== 'undefined' ? heading : 'Dashboard' %></h1>
+      <div class="who">Signed in as <b><%= user ? user.name : '' %></b><a href="/logout">Sign out</a></div>
+    </div>
+    <div class="wrap">

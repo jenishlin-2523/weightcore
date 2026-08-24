@@ -146,8 +146,11 @@ svg{ width:100%; height:100%; display:block; }
 .sidebar__collapse svg{ width:16px; height:16px; transition:transform .22s var(--ease); }
 .is-collapsed .sidebar__collapse svg{ transform:rotate(180deg); }
 .is-collapsed .brandmark__text{ display:none; }
-.is-collapsed .sidebar__brand{ padding:0 20px; }
-.is-collapsed .sidebar__collapse{ display:none; }
+/* collapsed: hide the logo, keep the toggle visible & centered so it can EXPAND again
+   (its chevron is rotated 180deg above, so it points outward = expand) */
+.is-collapsed .brandmark{ display:none; }
+.is-collapsed .sidebar__brand{ padding:0; justify-content:center; }
+.is-collapsed .sidebar__collapse{ margin:0 auto; }
 
 .nav{ flex:1; overflow-y:auto; padding:var(--sp-3) var(--sp-3) var(--sp-4); }
 .nav__group{ margin-top:var(--sp-4); }
@@ -465,10 +468,14 @@ select.input{ appearance:none; cursor:pointer; padding-right:30px;
 /* combobox */
 .combo{ position:relative; }
 .combo__menu{
-  position:absolute; z-index:20; top:calc(100% + 4px); left:0; right:0; max-height:266px; overflow-y:auto;
+  position:absolute; z-index:40; top:calc(100% + 4px); left:0; right:auto;
+  min-width:100%; width:max-content; max-width:340px;
+  max-height:266px; overflow-y:auto; overflow-x:hidden;
   background:var(--surface); border:1px solid var(--border-2); border-radius:11px;
   box-shadow:var(--shadow-3); padding:5px; display:none;
 }
+.combo__opt{ white-space:nowrap; }
+.combo__opt small{ overflow:hidden; text-overflow:ellipsis; }
 .combo.is-open .combo__menu{ display:block; }
 .combo__opt{ display:flex; align-items:center; gap:10px; padding:7px 9px; border-radius:8px; cursor:pointer; }
 .combo__opt:hover, .combo__opt.is-cursor{ background:var(--surface-3); }

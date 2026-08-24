@@ -4,6 +4,16 @@
    tickets are keyed (ScaleID, ReceiptTicketID) so the bridges never collide.
    Idempotent — safe to re-run. */
 
+/* TicketID must NOT be unique on the central — both bridges can produce the
+   same ticket number. The merge key is (ScaleID, ReceiptTicketID). */
+DECLARE @pk sysname = (SELECT name FROM sys.key_constraints
+                       WHERE parent_object_id = OBJECT_ID('dbo.TransactionData') AND type = 'PK');
+IF @pk IS NOT NULL EXEC('ALTER TABLE dbo.TransactionData DROP CONSTRAINT [' + @pk + ']');
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Txn_TicketID' AND object_id = OBJECT_ID('dbo.TransactionData'))
+  CREATE INDEX IX_Txn_TicketID ON dbo.TransactionData(TicketID);
+GO
+
 IF COL_LENGTH('dbo.TransactionData','ScaleID') IS NULL
   ALTER TABLE dbo.TransactionData ADD ScaleID NVARCHAR(20) NULL;
 GO

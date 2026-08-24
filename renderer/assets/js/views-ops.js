@@ -53,8 +53,6 @@
       const wk = T.filter(t => now - t.at < 7 * 864e5);
       const manualPct = wk.length ? (wk.filter(t => t.manual).length / wk.length) * 100 : 0;
 
-      // data-quality score
-      const q = V.quality.audit();
 
       /* ---- carry-forward ----
          The site has been running since Mar 2025. Cumulative figures continue
@@ -151,10 +149,6 @@
         U.kpi({
           label: 'Manual weighings', value: U.pct(manualPct), color: manualPct > 8 ? 'var(--danger)' : 'var(--violet)',
           foot: '<span class="dim">Last 7 days · target &lt; 5%</span>'
-        }) +
-        U.kpi({
-          label: 'Data quality', value: q.score, unit: '/100', color: q.score >= 80 ? 'var(--ok)' : 'var(--warn)',
-          foot: '<a href="#/quality">' + q.issues + ' open issues</a>'
         }) +
       '</div>' +
 
@@ -554,9 +548,14 @@
       }
 
       function repaint() {
+        // Abort the old tiles' MJPEG connections BEFORE replacing the DOM —
+        // detached streaming <img>s hold their sockets and exhaust Chromium's
+        // 6-per-host limit, after which new tiles hang on the placeholder.
+        U.$$('.cam img', term).forEach(im => { im.onerror = null; im.removeAttribute('src'); });
         term.innerHTML = self.left() + self.right();
         wireCombo();
         refreshRecall();
+        if (self._wireCams) self._wireCams();
       }
 
       // Keep the "Load by Ticket/Vehicle No" list current — a Tare weighment just
@@ -610,18 +609,22 @@
       }, 380);
 
       if (NATIVE) {
-        // Live camera tiles: refresh each with a fresh RTSP frame from the real camera.
+        // Live tiles play the local MJPEG relay directly — Chromium renders the
+        // 10 fps stream natively. No polling, no per-frame IPC, real motion.
         let realCams = null;
-        const refreshCams = () => {
+        const wireCams = () => {
           const go = (cs) => U.$$('.cam img', term).forEach((im, i) => {
-            if (!cs[i]) return;
-            window.weighcore.capture(cs[i].id).then(r => { if (r && r.ok && r.dataUrl) im.src = r.dataUrl; }).catch(() => {});
+            if (!cs[i] || !cs[i].stream || im.dataset.live) return;
+            im.dataset.live = '1';
+            const src = cs[i].stream;
+            im.onerror = () => { setTimeout(() => { if (im.isConnected) im.src = src + '?r=' + Date.now(); }, 2000); };
+            im.src = src;
           });
           if (realCams) go(realCams);
           else window.weighcore.listCameras().then(cs => { realCams = cs; go(cs); }).catch(() => {});
         };
-        refreshCams();
-        camTimer = setInterval(refreshCams, 1500);   // frames come from the main-process cache — instant
+        wireCams();
+        this._wireCams = wireCams;                    // repaint() re-runs this for fresh tiles
       } else {
         camTimer = setInterval(() => {
           camIdx = (camIdx + 1) % DB.LIVE.length;
@@ -650,11 +653,26 @@
           const o = e.target.closest('[data-v]'); if (!o) return;
           const v = DB.map.vehicle[o.dataset.v];
           TS.vehicleId = v.id;
+          // fetch the remaining details from this vehicle's most recent ticket,
+          // like the legacy "Load by Vehicle No" (transactions are newest-first)
+          const lastT = DB.transactions.find(t => t.vehicleId === v.id) || null;
+          if (lastT) {
+            if (lastT.type) TS.txnType = lastT.type;
+            if (lastT.direction) TS.direction = lastT.direction;
+            if (lastT.transporterId) TS.transporterId = lastT.transporterId;
+            if (lastT.productId) TS.productId = lastT.productId;
+            if (lastT.gateId) TS.gateId = lastT.gateId;
+            const c = lastT.cf || {};
+            if (c.cf2) TS.cf.cf2 = c.cf2;
+            if (c.cf3) TS.cf.cf3 = c.cf3;
+            if (c.cf4) TS.cf.cf4 = c.cf4;
+          }
           TS.transporterId = TS.transporterId || v.accountId;
           if (v.type) TS.cf.cf1 = v.type;
           TS.target = pickTarget();
           repaint();
-          U.toast('info', 'Vehicle loaded', v.no + (v.tare ? ' · stored tare ' + num(v.tare) + ' kg' : ' · no stored tare on file'));
+          U.toast('info', 'Vehicle loaded', v.no +
+            (lastT ? ' · details fetched from ticket #' + lastT.ticketNo : (v.tare ? ' · stored tare ' + num(v.tare) + ' kg' : ' · no stored tare on file')));
         });
       }
       wireCombo();
@@ -667,7 +685,14 @@
           if (key === 'capture') TS.capture = v;
           else if (key === 'mode') TS.mode = v;
           else if (key === 'weighType') { TS.weighType = v; TS.target = pickTarget(); }
-          else if (key === 'txnType') { TS.txnType = v; const pp = DB.map.product[TS.productId]; if (pp && pp.txnType && pp.txnType !== 'All' && pp.txnType !== v) TS.productId = ''; }
+          else if (key === 'txnType') {
+            TS.txnType = v;
+            const pp = DB.map.product[TS.productId];
+            if (pp && pp.txnType && pp.txnType !== 'All' && pp.txnType !== v) TS.productId = '';
+            // a type with exactly one product (Processing → MSW) selects itself
+            const list = DB.products.filter(p => p.active && (!p.txnType || p.txnType === 'All' || p.txnType === v));
+            if (!TS.productId && list.length === 1) TS.productId = list[0].id;
+          }
           else if (key === 'direction') TS.direction = v;
           repaint(); return;
         }
@@ -866,6 +891,8 @@
 
     unmount() {
       clearInterval(timer); clearInterval(camTimer);
+      document.querySelectorAll('.cam img').forEach(im => { im.onerror = null; im.removeAttribute('src'); });
+      this._wireCams = null;
       if (weightSub) { window.removeEventListener('wc:weight', weightSub); weightSub = null; }
       if (edgeSub) { window.removeEventListener('wc:edge', edgeSub); edgeSub = null; }
       window.removeEventListener('keydown', this._keys);

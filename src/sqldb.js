@@ -77,9 +77,18 @@ function transform(raw) {
     decimals: s(u.UnitName).toUpperCase() === 'KG' ? 0 : (s(u.UnitName).toUpperCase() === 'MT' ? 3 : 1),
     base: s(u.UnitName).toUpperCase() === 'KG', active: true
   }));
+  // A real Product.TransactionType value wins; the legacy DB has no such
+  // column, so classify by name: incoming MSW is Processing, RDF is RDF,
+  // every other recovered material (bio earth, inert, glass, …) is Disposal.
+  const inferTxnType = (name) => {
+    const n = String(name || '').trim().toLowerCase();
+    if (/^[,.\s]*m?sw$/.test(n)) return 'Processing';
+    if (n === 'rdf') return 'RDF';
+    return 'Disposal';
+  };
   const products = raw.products.map((p) => ({
     id: 'P' + p.ProductID, name: s(p.ProductName), code: s(p.ProductCode), desc: s(p.Notes),
-    unit: 'MT', rate: 0, txnType: s(p.TransactionType), active: bool(p.IsActive)
+    unit: 'MT', rate: 0, txnType: s(p.TransactionType) || inferTxnType(p.ProductName), active: bool(p.IsActive)
   }));
   const accounts = raw.accounts.map((a) => {
     const nm = s(a.CompanyName) || (s(a.FirstName) + ' ' + s(a.LastName)).trim();
@@ -202,6 +211,22 @@ const S  = (v) => `N'${sqlEsc(v)}'`;
 const NS = (v) => (v == null || v === '' ? 'NULL' : S(v));
 const NN = (v) => (num(v) ? num(v) : 'NULL');
 
+/* Schema tolerance: a legacy station DB may lack the newer optional columns
+ * (TransactionData.CustomField1-5, Product.TransactionType). Feature-detect
+ * once per database and shape the SQL accordingly, so the same build runs
+ * against both the legacy schema and the upgraded central one. */
+const colCache = {};
+async function hasCol(cfg, table, col) {
+  const k = cfg.database + '.' + table + '.' + col;
+  if (k in colCache) return colCache[k];
+  try {
+    const out = await runPayload(cfg, { mode: 'scalar', sql: `SELECT ISNULL(COL_LENGTH('dbo.${table}','${col}'),0)` }, 15000);
+    const m = /OK:(-?\d+)/.exec(out || '');
+    colCache[k] = !!(m && parseInt(m[1], 10) > 0);
+  } catch (_) { colCache[k] = false; }
+  return colCache[k];
+}
+
 /**
  * Write a weighment to the live DB, exactly like the legacy app:
  *  - fresh ticket  (t.update falsy): TicketID allocated MAX+1 inside the same
@@ -229,7 +254,10 @@ async function saveTicket(cfg, t) {
   } else {
     allocate = 'SELECT ISNULL(MAX(TicketID),0)+1 FROM TransactionData';
     if (t.ticketNo) tid = num(t.ticketNo);
-    statements.push(`INSERT INTO TransactionData (TicketID,VehicleID,DriverID,AccountID,TransporterID,Status,TransactionMode,TransactionType,PlantDirectionType,ReceiptTicketID,Charges,CreationTime,CreatedBy,VehicleNumber,DriverName,TransporterName,AccountName,CustomField1,CustomField2,CustomField3,CustomField4,CustomField5) VALUES ({TID},${NN(t.vehicleId)},${NN(t.driverId)},${NN(t.accountId)},${NN(t.transporterId)},${S(t.status || 'Complete')},${S(t.mode || 'Double')},${S(t.transactionType || 'Incoming')},${NS(t.direction)},${S(rid)},${num(t.charges)},${S(now)},${NN(t.createdBy)},${S(t.vehicleNo)},${NS(t.driverName)},${NS(t.transporterName)},${NS(t.accountName)},${NS(t.cf1)},${NS(t.cf2)},${NS(t.cf3)},${NS(t.cf4)},${NS(t.cf5)})`);
+    const hasCf = await hasCol(cfg, 'TransactionData', 'CustomField1');
+    const cfCols = hasCf ? ',CustomField1,CustomField2,CustomField3,CustomField4,CustomField5' : '';
+    const cfVals = hasCf ? `,${NS(t.cf1)},${NS(t.cf2)},${NS(t.cf3)},${NS(t.cf4)},${NS(t.cf5)}` : '';
+    statements.push(`INSERT INTO TransactionData (TicketID,VehicleID,DriverID,AccountID,TransporterID,Status,TransactionMode,TransactionType,PlantDirectionType,ReceiptTicketID,Charges,CreationTime,CreatedBy,VehicleNumber,DriverName,TransporterName,AccountName${cfCols}) VALUES ({TID},${NN(t.vehicleId)},${NN(t.driverId)},${NN(t.accountId)},${NN(t.transporterId)},${S(t.status || 'Complete')},${S(t.mode || 'Double')},${S(t.transactionType || 'Incoming')},${NS(t.direction)},${S(rid)},${num(t.charges)},${S(now)},${NN(t.createdBy)},${S(t.vehicleNo)},${NS(t.driverName)},${NS(t.transporterName)},${NS(t.accountName)}${cfVals})`);
   }
   (t.passes || []).forEach((p, i) => statements.push(detailSql(p, i)));
 
@@ -285,6 +313,7 @@ async function saveMaster(cfg, { entity, id, fields }) {
   const def = MASTERS_SQL[entity];
   if (!def) return { ok: false, error: 'no SQL mapping for "' + entity + '"' };
   const cols = def.map(fields || {});
+  if (entity === 'products' && !(await hasCol(cfg, 'Product', 'TransactionType'))) delete cols.TransactionType;
   const keys = Object.keys(cols);
   const sql = id
     ? `UPDATE ${def.table} SET ` + keys.map((k) => `${k}=${cols[k]}`).join(',') + ` WHERE ${def.pk}=${num(id)}; SELECT ${num(id)}`

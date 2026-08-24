@@ -1,0 +1,20 @@
+WeighCore — authorize this PC's new tunnel key on the central VPS (200.141.9.11)
+================================================================================
+
+Run this ONE command on the VPS as root (via your hosting provider's web
+console, or any existing root SSH session). It adds this PC's new key to the
+locked-down wctunnel account (port-forward only, no shell — same restrictions
+as before):
+
+echo 'no-pty,no-agent-forwarding,no-X11-forwarding,permitopen="127.0.0.1:1433" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICQp4MeFHCgaUkeNJKJSXueEZRUAYYPV3hVj5O4N5sON wctunnel@P5WB2' >> /home/wctunnel/.ssh/authorized_keys
+
+If the wctunnel user does not exist yet on the VPS, instead run the full
+script keys/setup-tunnel-user.sh (updating its PUB= line to the key above).
+
+Then tell Claude "key authorized" — sync will be enabled and verified.
+
+--------------------------------------------------------------------------------
+ALTERNATIVE (no VPS access needed): get the ORIGINAL wctunnel_key private-key
+file from the developer (mairu0087) and place it at:
+    C:\Users\Admin\Desktop\WeighCore-Desktop\keys\wctunnel_key
+(replacing the newly generated file) — then tell Claude "key in place".

@@ -61,10 +61,7 @@
 
   const cameras = [
     { id: 'C1', name: 'Lane 1 — Front', type: 'RTSP/MJPEG', url: 'rtsp://192.168.1.112:554/profile2', ip: '192.168.1.112', port: 554, user: 'admin', wbId: 'WB1', status: 'online', active: true },
-    { id: 'C2', name: 'Lane 1 — Rear', type: 'RTSP/MJPEG', url: 'rtsp://192.168.1.114:554/profile2', ip: '192.168.1.114', port: 554, user: 'admin', wbId: 'WB1', status: 'online', active: true },
-    { id: 'C3', name: 'Lane 2 — Front', type: 'HikVision', url: 'rtsp://192.168.1.116:554/Streaming/Channels/102', ip: '192.168.1.116', port: 554, user: 'admin', wbId: 'WB2', status: 'online', active: true },
-    { id: 'C4', name: 'Lane 2 — Rear', type: 'HikVision', url: 'rtsp://192.168.1.118:554/Streaming/Channels/102', ip: '192.168.1.118', port: 554, user: 'admin', wbId: 'WB2', status: 'online', active: true },
-    { id: 'C5', name: 'Main gate — ANPR', type: 'RTSP/MJPEG', url: 'rtsp://192.168.1.120:554/profile1', ip: '192.168.1.120', port: 554, user: 'admin', wbId: null, status: 'offline', active: false }
+    { id: 'C2', name: 'Lane 1 — Rear', type: 'RTSP/MJPEG', url: 'rtsp://192.168.1.114:554/profile2', ip: '192.168.1.114', port: 554, user: 'admin', wbId: 'WB1', status: 'online', active: true }
   ];
 
   const gates = [

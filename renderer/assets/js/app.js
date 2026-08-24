@@ -35,8 +35,7 @@
     {
       label: 'Insight', items: [
         { h: '#/reports/transaction', t: 'Reports', i: 'chart', v: 'reports' },
-        { h: '#/audit', t: 'Audit trail', i: 'shield', v: 'audit' },
-        { h: '#/quality', t: 'Data quality', i: 'sparkle', v: 'quality', badge: () => V.quality.audit().issues }
+        { h: '#/audit', t: 'Audit trail', i: 'shield', v: 'audit' }
       ]
     },
     {
@@ -50,7 +49,7 @@
 
   const ROUTES = {
     '': 'dashboard', 'dashboard': 'dashboard', 'terminal': 'terminal', 'transactions': 'transactions',
-    'reports': 'reports', 'audit': 'audit', 'quality': 'quality', 'settings': 'settings',
+    'reports': 'reports', 'audit': 'audit', 'settings': 'settings',
     'ticket': 'ticket',  // #/ticket/12034 — deep link, also what the slip QR resolves to
     'slip': 'slip'       // #/slip/12034  — straight to the printable slip (reprints)
   };
@@ -115,7 +114,7 @@
       $('#app').classList.remove('is-navopen');
       document.title = 'WeighCore — ' + (({
         dashboard: 'Operations', terminal: 'Weighment terminal', transactions: 'Transactions',
-        reports: 'Reports', audit: 'Audit trail', quality: 'Data quality', settings: 'Settings'
+        reports: 'Reports', audit: 'Audit trail', settings: 'Settings'
       })[view] || view.replace(/^master_|^admin_/, '').replace(/^\w/, c => c.toUpperCase()));
     }
   };

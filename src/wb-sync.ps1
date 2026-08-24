@@ -49,6 +49,13 @@ function Upsert-Nat($remote, $table, $natCols, $writeCols, $row, $remap) {
   foreach ($c in $writeCols) {
     $v = $row[$c]
     if ($remap -and $remap.ContainsKey($c)) { $v = Remap $remap[$c] $v }
+    # legacy serial settings store words ('One') where central wants integers
+    if (@('StopBits','DataBits','BaudRate') -contains $c -and $v -is [string]) {
+      $w = $v.Trim().ToLower()
+      if ($w -eq 'one') { $v = 1 }
+      elseif ($w -eq 'two') { $v = 2 }
+      else { $d = 0.0; if ([double]::TryParse($w, [ref]$d)) { $v = $d } else { $v = [System.DBNull]::Value } }
+    }
     if (DbNull $v) { [void]$cmd.Parameters.AddWithValue("@p_$c", [System.DBNull]::Value) }
     else { [void]$cmd.Parameters.AddWithValue("@p_$c", $v) }
   }
@@ -201,6 +208,6 @@ try {
 } catch {
   try { if ($local) { $local.Close() } } catch {}
   try { if ($remote) { $remote.Close() } } catch {}
-  [Console]::Error.WriteLine("SYNC_ERR:" + $_.Exception.Message)
+  [Console]::Error.WriteLine("SYNC_ERR:" + $_.Exception.Message + "  @ " + ($_.ScriptStackTrace -split "`n")[0])
   exit 1
 }

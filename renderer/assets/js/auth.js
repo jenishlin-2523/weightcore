@@ -27,22 +27,6 @@
   const A = window.AUTH = {
     user: null,
 
-    /* The two accounts offered on the sign-in screen. */
-    demoLogins: [
-      {
-        username: 'superadmin',
-        label: 'Super Administrator',
-        blurb: 'Full access to all 17 modules, plus the only role that can delete a ticket.',
-        icon: 'key'
-      },
-      {
-        username: 'operator',
-        label: 'Weighbridge Operator',
-        blurb: 'Weighing terminal, transactions and dashboard.',
-        icon: 'scale'
-      }
-    ],
-
     role() { return this.user ? DB.map.role[this.user.roleId] : null; },
     isSuper() { return !!this.user && this.user.roleId === 'R0'; },
 
@@ -127,20 +111,9 @@
           '</div>' +
           '<h1 class="login__h">Sign in</h1>' +
           '<p class="login__sub">' + esc(DB.company.name) + ' · ' + esc(DB.company.project) + '</p>' +
-          '<div class="login__cards">' +
-            A.demoLogins.map(l =>
-              '<button class="logincard" data-login="' + esc(l.username) + '">' +
-                '<span class="logincard__ico">' + icon(l.icon) + '</span>' +
-                '<span class="logincard__b"><b>' + esc(l.label) + '</b>' +
-                '<code>' + esc(l.username) + '</code>' +
-                '<small>' + esc(l.blurb) + '</small></span>' +
-                '<span class="logincard__go">' + icon('arrowr') + '</span>' +
-              '</button>').join('') +
-          '</div>' +
-          '<div class="login__or"><span>or sign in manually</span></div>' +
           '<div class="login__form">' +
-            '<input class="input" id="lgUser" placeholder="Username" autocomplete="username" value="superadmin">' +
-            '<input class="input" type="password" id="lgPass" placeholder="Password" autocomplete="current-password" value="">' +
+            '<input class="input" id="lgUser" placeholder="Username" autocomplete="username" autofocus>' +
+            '<input class="input" type="password" id="lgPass" placeholder="Password" autocomplete="current-password">' +
             '<button class="btn btn--primary btn--lg" id="lgGo">Sign in</button>' +
           '</div>' +
           '<p class="login__note">Sign in with your weighbridge account.</p>' +
@@ -169,8 +142,6 @@
       });
     };
     el.onclick = function (e) {
-      const c = e.target.closest('[data-login]');
-      if (c) { const f = document.getElementById('lgUser'); if (f) f.value = c.dataset.login; submit(c.dataset.login); return; }
       if (e.target.closest('#lgGo')) { submit((document.getElementById('lgUser').value || '').trim()); }
     };
     el.onkeydown = function (e) {

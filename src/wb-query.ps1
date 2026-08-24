@@ -28,9 +28,17 @@ try {
     }
     return ,$rows
   }
+  # schema tolerance: legacy station DBs may lack the newer optional columns
+  function HasCol($t, $c) {
+    $cmd = $cn.CreateCommand(); $cmd.CommandText = "SELECT COL_LENGTH('dbo.$t','$c')"
+    $r = $cmd.ExecuteScalar(); return -not (($null -eq $r) -or ($r -is [DBNull]))
+  }
+  $prodTT = if (HasCol 'Product' 'TransactionType') { 'TransactionType' } else { 'NULL AS TransactionType' }
+  $cfCols = ((1..5) | ForEach-Object { if (HasCol 'TransactionData' "CustomField$_") { "CustomField$_" } else { "NULL AS CustomField$_" } }) -join ','
+
   $data = [ordered]@{}
   $data.units        = Q "SELECT UnitID,UnitName FROM Unit"
-  $data.products     = Q "SELECT ProductID,ProductName,ProductCode,Notes,TransactionType,IsActive FROM Product"
+  $data.products     = Q "SELECT ProductID,ProductName,ProductCode,Notes,$prodTT,IsActive FROM Product"
   $data.accounts     = Q "SELECT AccountID,AccountCode,CompanyName,FirstName,LastName,ContactNo,IsAccount,IsTransporter,City,Active FROM Account"
   $data.vehicles     = Q "SELECT VehicleID,VehicleNumber,VehicleType,TareWeight,AccountID,IsActive FROM Vehicle"
   $data.drivers      = Q "SELECT DriverID,FirstName,LastName,IDProofNo,AccountID,Active FROM Driver"
@@ -38,7 +46,7 @@ try {
   $data.weighbridges = Q "SELECT WeightBridgeID,ScaleName,MaxCapacity,UnitID,IsActive,COMPort,BaudRate,DataBits,Parity,StopBits FROM WeightBridge"
   $data.users        = Q "SELECT UserID,FirstName,LastName,Email,ContactNo,UserName,TemplateID,Active FROM UserMaster"
   $data.roles        = Q "SELECT TemplateID,TemplateName,Active FROM Template"
-  $data.txns         = Q "SELECT TicketID,DriverID,VehicleID,Status,TransactionMode,AccountID,TransporterID,CONVERT(varchar(40),ReceiptTicketID) AS ReceiptTicketID,Charges,TransactionType,CreationTime,CreatedBy,PlantDirectionType,VehicleNumber,DriverName,TransporterName,AccountName,CustomField1,CustomField2,CustomField3,CustomField4,CustomField5 FROM TransactionData"
+  $data.txns         = Q "SELECT TicketID,DriverID,VehicleID,Status,TransactionMode,AccountID,TransporterID,CONVERT(varchar(40),ReceiptTicketID) AS ReceiptTicketID,Charges,TransactionType,CreationTime,CreatedBy,PlantDirectionType,VehicleNumber,DriverName,TransporterName,AccountName,$cfCols FROM TransactionData"
   $data.details      = Q "SELECT CONVERT(varchar(40),ReceiptTicketID) AS ReceiptTicketID,WeightBridgeID,SequenceNo,ProductID,GrossWeight,TareWeight,GrossTime,TareTime,WeighmentType,GateID,UserID,CaptureWeight,CaptureTime,NetWeight,WeightUnit,IsCapturedManual,WeighbridgeName,ProductName,GateName FROM TransactionDetail"
   $cn.Close()
   [Console]::OutputEncoding = [System.Text.Encoding]::UTF8

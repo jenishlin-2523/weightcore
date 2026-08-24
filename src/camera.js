@@ -125,8 +125,12 @@ function spawnStream(st) {
   st.spawnAt = Date.now();
   // -timeout: RTSP socket I/O timeout — a dead connect ERRORS instead of
   // hanging silently. stdin stays open for the graceful 'q' quit.
-  const args = ['-loglevel', 'error', '-timeout', '10000000', '-rtsp_transport', 'tcp', '-i', url,
-    '-an', '-vf', 'fps=2', '-f', 'image2pipe', '-c:v', 'mjpeg', '-q:v', '4', '-'];
+  // -use_wallclock_as_timestamps: these cameras emit garbage PTS/DTS, which
+  // starves the fps filter forever (camera 1 stalled on every connect until
+  // frames were restamped from arrival time).
+  const args = ['-loglevel', 'error', '-timeout', '10000000', '-rtsp_transport', 'tcp',
+    '-use_wallclock_as_timestamps', '1', '-i', url,
+    '-an', '-vf', 'fps=10', '-f', 'image2pipe', '-c:v', 'mjpeg', '-q:v', '4', '-'];
   const child = spawn(ffmpegPath(), args, { windowsHide: true });
   st.child = child;
   st.buf = Buffer.alloc(0);
@@ -149,6 +153,7 @@ function spawnStream(st) {
         const ws = st.waiters.splice(0);
         ws.forEach((w) => { clearTimeout(w.t); w.resolve(frame); });
       }
+      broadcastFrame(st.cam.id, frame);
     }
   });
   child.stderr.on('data', (b) => {           // keep the pipe drained, remember the last line
@@ -187,10 +192,65 @@ function streamFrame(cam, timeoutMs = 8000, maxAgeMs = 4000) {
   });
 }
 
+/* ---------------- local MJPEG relay ----------------
+ * A tiny HTTP server on 127.0.0.1 re-serves each camera's frames as
+ * multipart/x-mixed-replace. The UI's tiles point an <img> at it once and
+ * Chromium plays the stream natively — real 10 fps motion, no polling, no
+ * per-frame IPC. Slow clients drop frames instead of buffering. */
+const MJPEG_PORT = 18093;
+const mjpeg = { server: null, clients: new Map() };   // camId -> Set<client>
+
+function liveUrl(camId) { return 'http://127.0.0.1:' + MJPEG_PORT + '/' + encodeURIComponent(camId); }
+
+function writeFrame(client, jpeg) {
+  if (!client.ready) return;                          // backpressure: drop, never buffer
+  const head = Buffer.from('--wcframe\r\nContent-Type: image/jpeg\r\nContent-Length: ' + jpeg.length + '\r\n\r\n');
+  try { client.ready = client.res.write(Buffer.concat([head, jpeg, Buffer.from('\r\n')])); } catch (_) {}
+}
+
+function broadcastFrame(camId, jpeg) {
+  const set = mjpeg.clients.get(camId);
+  if (set) for (const cl of set) writeFrame(cl, jpeg);
+}
+
+function startMjpegServer() {
+  if (mjpeg.server) return;
+  const srv = http.createServer((req, res) => {
+    const id = decodeURIComponent(String(req.url || '/').slice(1).split('?')[0]);
+    const st = streams.get(id);
+    if (!st) { res.writeHead(404); res.end('no such camera'); return; }
+    res.writeHead(200, {
+      'Content-Type': 'multipart/x-mixed-replace; boundary=wcframe',
+      'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache'
+    });
+    let set = mjpeg.clients.get(id);
+    if (!set) { set = new Set(); mjpeg.clients.set(id, set); }
+    const client = { res, ready: true };
+    set.add(client);
+    res.on('close', () => set.delete(client));
+    res.on('drain', () => { client.ready = true; });
+    if (st.lastFrame) writeFrame(client, st.lastFrame);   // paint instantly
+  });
+  srv.on('error', (e) => camLog('mjpeg relay error: ' + e.message));
+  srv.listen(MJPEG_PORT, '127.0.0.1', () => camLog('mjpeg relay on 127.0.0.1:' + MJPEG_PORT));
+  mjpeg.server = srv;
+}
+
 /** Warm the streams at app boot so the first capture is already instant. */
-function startStreams(cams) { (cams || []).forEach((c) => { if (c.type === 'rtsp' || /^rtsp:/i.test(c.url || '')) startStream(c); }); }
+function startStreams(cams) {
+  (cams || []).forEach((c) => { if (c.type === 'rtsp' || /^rtsp:/i.test(c.url || '')) startStream(c); });
+  if (streams.size) startMjpegServer();
+}
 
 function stopStreams() {
+  if (mjpeg.server) {
+    try {
+      for (const set of mjpeg.clients.values()) for (const cl of set) { try { cl.res.end(); } catch (_) {} }
+      mjpeg.clients.clear();
+      mjpeg.server.close();
+    } catch (_) {}
+    mjpeg.server = null;
+  }
   for (const st of streams.values()) {
     st.stopped = true;
     if (st.retryTimer) { clearTimeout(st.retryTimer); st.retryTimer = null; }
@@ -316,4 +376,4 @@ async function probe(cam) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
-module.exports = { capture, probe, startStreams, stopStreams, setLogger };
+module.exports = { capture, probe, startStreams, stopStreams, setLogger, liveUrl };

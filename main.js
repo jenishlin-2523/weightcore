@@ -45,9 +45,15 @@ function ensureTunnelKey() {
     if (!fs.existsSync(bundled)) return '';
     const dst = path.join(configDir, 'wctunnel_key');
     try { if (!fs.existsSync(dst)) fs.copyFileSync(bundled, dst); } catch (_) {}
+    // Harden the key's ACLs in the BACKGROUND with a timeout. icacls can be
+    // held for minutes by antivirus (K7 on this site) when spawned by a
+    // freshly installed unsigned exe — a synchronous wait here froze the
+    // whole app boot before the window ever appeared.
     try {
       const u = process.env.USERNAME || '';
-      require('child_process').execFileSync('icacls', [dst, '/inheritance:r', '/grant:r', u + ':F'], { windowsHide: true, stdio: 'ignore' });
+      const child = require('child_process').execFile('icacls', [dst, '/inheritance:r', '/grant:r', u + ':F'], { windowsHide: true, timeout: 8000 }, () => {});
+      child.on('error', () => {});
+      if (child.unref) child.unref();
     } catch (_) {}
     return dst;
   } catch (_) { return ''; }
@@ -123,7 +129,7 @@ function registerIpc() {
 
   // cameras
   const camHost = (c) => c.host || ((String(c.url || '').match(/\/\/(?:[^@/]*@)?([^:/]+)/) || [])[1] || '');
-  ipcMain.handle('camera:list', () => cfg.cameras.map((c) => ({ id: c.id, label: c.label, host: camHost(c) })));
+  ipcMain.handle('camera:list', () => cfg.cameras.map((c) => ({ id: c.id, label: c.label, host: camHost(c), stream: camera.liveUrl(c.id) })));
   ipcMain.handle('camera:probe', async () => {
     const out = [];
     for (const c of cfg.cameras) out.push({ id: c.id, ...(await camera.probe(c)) });

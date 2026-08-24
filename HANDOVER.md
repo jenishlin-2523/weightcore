@@ -20,9 +20,9 @@ PC runs its own database (works offline) and both feed the central admin portal.
 
 | Where | Value |
 |---|---|
-| App login (both PCs) | `superadmin` / `Admin@123` |
+| App login (both PCs) | `admin` / `admin` |
 | Central connection | **pre-configured in the installer** — nothing to type; just click *Test connection* |
-| Admin portal (for the office) | https://weighcore.200-141-9-11.sslip.io — `superadmin` / `Admin@123` |
+| Admin portal (for the office) | https://weighcore.200-141-9-11.sslip.io — `admin` / `admin` |
 
 > Central access (host, restricted SSH tunnel key, SQL login) is baked into the
 > installer, so both PCs reach the central server automatically — no keys or
@@ -68,7 +68,7 @@ PC runs its own database (works offline) and both feed the central admin portal.
 
 ## 4. Verify the PC
 
-1. Sign in: `superadmin` / `Admin@123`.
+1. Sign in: `admin` / `admin`.
 2. Do one test double-weighment (F8 to capture, F7 to complete).
 3. From any browser, open the **admin portal**
    (https://weighcore.200-141-9-11.sslip.io) → the ticket appears within ~30 s,

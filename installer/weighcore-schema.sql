@@ -210,11 +210,11 @@ IF NOT EXISTS (SELECT 1 FROM dbo.Template)
         (N'Supervisor',    1);   -- TemplateID 3 -> R1 administrator
 GO
 
--- superadmin / Admin@123  (Salt = HMAC-SHA256('jm3UIgFC7CCQwqtr', 'superadmin'+'admin@123'))
-IF NOT EXISTS (SELECT 1 FROM dbo.UserMaster WHERE LOWER(UserName)=N'superadmin')
+-- admin / admin  (Salt = HMAC-SHA256('jm3UIgFC7CCQwqtr', 'admin'+'admin'))
+IF NOT EXISTS (SELECT 1 FROM dbo.UserMaster WHERE LOWER(UserName)=N'admin')
     INSERT INTO dbo.UserMaster (UserName, FirstName, LastName, Email, ContactNo, TemplateID, Salt, Active)
-    VALUES (N'superadmin', N'Super', N'Admin', N'super@chennaibiomining.in', N'9840000000', 1,
-            N'C1aIcT4NEJevkJ772zKNT/03WlOVumykaOn144sS0KM=', 1);
+    VALUES (N'admin', N'Admin', N'User', NULL, NULL, 1,
+            N'JssKlcNTxylpQVSSWWxMoi1bQA5xlJhVmUkKeg7PZ8g=', 1);
 GO
 
 -- NOTE: the weighbridge row is created by the Setup wizard, named after THIS

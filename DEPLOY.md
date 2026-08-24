@@ -54,7 +54,7 @@ On first launch the **Terminal Setup** wizard opens. Fill in:
 > (WB1 vs WB2). Everything else is the same.
 
 ### 4. Verify
-- Sign in: **`superadmin` / `Admin@123`**.
+- Sign in: **`admin` / `admin`**.
 - Do a test double-weighment (F8 to capture passes, F7 to complete).
 - Within ~30 s it appears on the central, tagged with this PC's Scale ID.
 - Repeat on the other PC; confirm a vehicle added at one lane appears at the other.
@@ -65,7 +65,7 @@ On first launch the **Terminal Setup** wizard opens. Fill in:
 
 | What | Value |
 |---|---|
-| App login | `superadmin` / `Admin@123` |
+| App login | `admin` / `admin` |
 | Local SQL `sa` | `WeighCore!SVT2026` |
 | Central SQL login | `weighcore` / (from handover sheet) |
 

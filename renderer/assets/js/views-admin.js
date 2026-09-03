@@ -506,6 +506,70 @@
       });
     },
 
+    /* the legacy "Transaction Summary Report" document — centred company
+       header, filter line, one row per ticket, weights as plain "NNNN Kg" */
+    summaryDoc() {
+      const rows = this.rows().slice().sort((a, b) => a.ticketNo - b.ticketNo);
+      const slipCfg = (window.weighcore && window.weighcore.slipConfig && window.weighcore.slipConfig()) || null;
+      const co0 = (slipCfg && slipCfg.companies && slipCfg.companies[0]) || DB.company.name;
+      const company = (/^m\/s/i.test(String(co0)) ? '' : 'M/s. ') + co0;
+      const fT12 = (d) => d ? (fDate(d) + ' ' + fTime(d)) : '';
+      const p2 = (x) => String(x).padStart(2, '0');
+      const fFull = (d) => {
+        let h = d.getHours(); const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+        return fDate(d) + ' ' + p2(h) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds()) + ' ' + ap;
+      };
+      const kgv = (v) => v != null ? v + ' Kg' : '';
+      const td = (v, right) => '<td' + (right ? ' style="text-align:right"' : '') + '>' + esc(v == null ? '' : String(v)) + '</td>';
+      const net = rows.reduce((n, t) => n + (t.net || 0), 0);
+      return '<div class="repdoc">' +
+        '<div class="repdoc__head"><h3>' + esc(company) + '</h3><p>Transaction Summary Report</p></div>' +
+        '<p class="repdoc__filter">(Filtered for: Transaction Date between ' + esc(fFull(RQ.from)) + ' To ' + esc(fFull(RQ.to)) + ' )</p>' +
+        '<table class="repdoc__tbl" border="1" cellspacing="0" cellpadding="4"><thead><tr>' +
+        ['Ticket ID', 'Vehicle Number', 'Product', 'Scale Name', 'Transaction Type', 'Gross Time', 'Gross Weight', 'Tare Time', 'Tare Weight', 'Net Weight']
+          .map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' +
+        rows.map(t =>
+          '<tr>' + td(t.ticketNo) + td(vName(t.vehicleId)) + td(pName(t.productId)) +
+          td((DB.map.wb[t.wbId] || {}).name || '') + td(t.type) +
+          td(t.grossAt ? fT12(t.grossAt) : '') + td(kgv(t.gross), true) +
+          td(t.tareAt ? fT12(t.tareAt) : '') + td(kgv(t.tare), true) +
+          td(kgv(t.net), true) + '</tr>').join('') +
+        '</tbody><tfoot><tr>' +
+        '<td colspan="6"><b>Total — ' + rows.length + ' tickets</b></td>' +
+        '<td></td><td></td><td></td><td style="text-align:right"><b>' + kgv(net) + '</b></td>' +
+        '</tr></tfoot></table></div>';
+    },
+
+    /* pop-up view of the summary report with Excel / PDF export */
+    summaryPopup() {
+      const self = this;
+      const canExport = !!(window.weighcore && window.weighcore.exportReport);
+      U.openModal(
+        '<div class="modal__head"><div><div class="card__title">Transaction Summary Report</div>' +
+        '<div class="card__sub">' + fDate(RQ.from) + ' → ' + fDate(RQ.to) + ' · ' + this.rows().length + ' tickets</div></div>' +
+        '<div class="spacer"></div>' +
+        (canExport
+          ? '<button class="btn btn--sm" id="rXls">' + icon('download') + 'Export Excel</button>' +
+            '<button class="btn btn--sm btn--primary" id="rPdf">' + icon('download') + 'Export PDF</button>'
+          : '') +
+        '<button class="iconbtn" data-close>' + icon('x') + '</button></div>' +
+        '<div class="modal__body">' + this.summaryDoc() + '</div>', true);
+      const send = (kind, btn) => {
+        btn.disabled = true;
+        const name = 'Transaction-Summary-' + fDate(RQ.from) + '-to-' + fDate(RQ.to);
+        window.weighcore.exportReport({ kind, name, html: self.summaryDoc() }).then((r) => {
+          btn.disabled = false;
+          if (r && r.ok) {
+            U.toast('ok', kind === 'xls' ? 'Excel exported' : 'PDF exported', r.file || 'saved');
+            if (r.dir && window.weighcore.openPath) window.weighcore.openPath(r.dir);
+          } else U.toast('danger', 'Export failed', (r && r.error) || 'unknown error');
+        }).catch((e) => { btn.disabled = false; U.toast('danger', 'Export failed', String((e && e.message) || e)); });
+      };
+      const bx = U.$('#rXls'), bp = U.$('#rPdf');
+      if (bx) bx.addEventListener('click', () => send('xls', bx));
+      if (bp) bp.addEventListener('click', () => send('pdf', bp));
+    },
+
     master() {
       const sets = [
         { k: 'vehicle', t: 'Vehicles', rows: DB.vehicles, cols: [['Vehicle no', r => r.no], ['Type', r => r.type || '—'], ['Transporter', r => aName(r.accountId)], ['Tare (kg)', r => num(r.tare)], ['Active', r => r.active ? 'Yes' : 'No']] },
@@ -591,13 +655,14 @@
         if (sg) { RQ.out = sg.dataset.v; U.$$('[data-seg="out"] .seg__opt').forEach(o => o.classList.toggle('is-on', o === sg)); if (RQ.ran) U.$('#rOut').innerHTML = self.output(); return; }
         if (e.target.closest('#rRun')) {
           ['From', 'To'].forEach(k => { const el = U.$('#r' + k); if (el && el.value) RQ[k.toLowerCase()] = new Date(el.value); });
+          RQ.to.setSeconds(59, 999);   // the To minute is inclusive, like the legacy report's 11:59:59 PM bound
           ['Status', 'Type', 'Mode', 'Site', 'Product', 'Transporter', 'Vehicle', 'Cf1', 'Cf3', 'Cf4'].forEach(k => {
             const el = U.$('#r' + k); if (el) RQ[k.charAt(0).toLowerCase() + k.slice(1)] = el.value;
           });
           RQ.ran = true;
           U.$('#rOut').innerHTML = self.output();
           U.toast('ok', 'Report ready', self.rows().length + ' tickets matched.');
-          U.$('#rOut').scrollIntoView({ behavior: 'smooth', block: 'start' });
+          self.summaryPopup();   // the legacy-format report opens as a pop-up with Excel/PDF export
           return;
         }
         if (e.target.closest('#rReset')) {

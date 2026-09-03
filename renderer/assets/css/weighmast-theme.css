@@ -182,18 +182,37 @@ input[type="text"], input[type="search"], input[type="number"], input[type="date
 .termwrap .card__body > .stack{ gap:9px; }
 .termwrap .card__body .hr{ margin:4px 0; }
 
-/* compact inline labels — label left, control right, like the legacy form */
-.termwrap .formgrid--2{ gap:7px 20px; }
+/* Stacked fields — label ABOVE a full-width control. The old inline-label
+   grid (118px + minmax(0,1fr)) crushed every control to ~50-95px once the
+   searchable combos wrapped them; controls can never collapse again because
+   each field owns its column's full width and the grid drops to ONE column
+   when a column can't get at least 240px. */
+.termwrap .formgrid--2{
+  display:grid; gap:10px 18px;
+  grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));
+}
 .termwrap .formgrid--2 .field{
-  display:grid; grid-template-columns:118px minmax(0,1fr);
-  align-items:center; column-gap:8px;
+  display:flex; flex-direction:column; align-items:stretch; gap:4px;
 }
-.termwrap .formgrid--2 .field > *{ grid-column:2; min-width:0; }
-.termwrap .formgrid--2 .field > .field__label{
-  grid-column:1; margin:0; justify-self:start; font-weight:600; font-size:12.2px;
+.termwrap .formgrid--2 .field > *{ min-width:0; }
+.termwrap .formgrid--2 .field__label{
+  font-size:11.5px; font-weight:700; letter-spacing:.02em;
+  text-transform:uppercase; margin:0;
 }
-.termwrap .formgrid--2 .input, .termwrap .formgrid--2 select.input{ height:30px; padding-top:2px; padding-bottom:2px; }
+.termwrap .formgrid--2 .input,
+.termwrap .formgrid--2 select.input{
+  width:100%; min-width:0; height:34px; font-size:13px;
+}
 .termwrap .formgrid--2 .field__hint{ margin-top:1px; font-size:10.6px; }
+/* the vehicle input + its quick-add button: same 34px height, square button,
+   never bleeding into the neighbouring column */
+.termwrap .inputgroup{ display:flex; gap:6px; align-items:stretch; }
+.termwrap .inputgroup .combo{ flex:1 1 auto; min-width:0; }
+.termwrap .inputgroup .input{ flex:1 1 auto; min-width:0; }
+.termwrap .inputgroup .btn{
+  height:34px; width:34px; flex:none; padding:0;
+  display:flex; align-items:center; justify-content:center;
+}
 
 /* right: cameras beside the indicator, then the prev-weights band */
 .termhw{ display:grid; grid-template-columns:1.02fr 1fr; }
@@ -249,3 +268,102 @@ input[type="text"], input[type="search"], input[type="number"], input[type="date
 .lslip__sig{ margin-left:auto; text-align:center; font-weight:700; }
 .lslip__sig .line{ border-top:1.4px solid #111; width:190px; margin-bottom:4px; }
 @media print{ .lslip{ border:0; border-radius:0; } }
+
+/* ==========================================================================
+   Responsive fit — un-maximised and small-screen windows.
+   The shell overflowed horizontally below ~1310px because every flex child
+   of the topbar carries a hard minimum width (omnibox min-width:300px, the
+   nowrap site select and scale chip, and the user panel — flex items default
+   to min-width:auto so none of them could shrink). The row's minimum content
+   width exceeded the window minus the 254px sidebar, the surplus spilled
+   right past the viewport — clipping the user panel — and gave the whole
+   page a horizontal scrollbar. Fixes: let the topbar shrink and shed the
+   user-panel text in steps, auto-collapse the sidebar to its icon rail from
+   1100px down, and give the transactions ledger a readable minimum width
+   that scrolls inside its own card instead of squeezing.
+   ========================================================================== */
+
+/* ---- topbar: children may shrink; long text degrades to an ellipsis ---- */
+/* app.css means the hamburger to be hidden except off-canvas widths, but its
+   .topbar__menu{display:none} is written BEFORE .iconbtn{display:grid} at the
+   same specificity, so the button was visible (and a no-op) at every width.
+   Restate the intent from this later-loaded file: hidden, except at 900px and
+   below where it toggles the off-canvas sidebar. */
+.topbar__menu{ display:none; }
+@media (max-width:900px){
+  .topbar__menu{ display:grid; }
+  /* while the off-canvas nav is open it would cover the hamburger (sidebar
+     z-index 75 > topbar 30), leaving no way to close it again — keep the
+     topbar above the open sidebar so the button stays clickable */
+  .app.is-navopen .topbar{ z-index:76; }
+}
+@media (min-width:1001px){
+  /* app.css already gives the omnibox flex:1/min-width:0 at 1000px and below;
+     above that, trade its fixed 300px minimum for "preferred 300, may shrink" */
+  .omnibox{ min-width:150px; flex:0 1 300px; }
+}
+.omnibox span{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sitepick .select{ max-width:200px; overflow:hidden; text-overflow:ellipsis; }
+.who, .who__txt{ min-width:0; }
+.who__txt strong, .who__txt span{
+  max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+/* the user panel sheds text in steps; the avatar and sign-out always remain
+   (app.css hides the remaining text at 1000px and below) */
+@media (max-width:1280px){ .who__txt span{ display:none; } }  /* role subtitle first */
+@media (max-width:1040px){ .who__txt{ display:none; } }       /* then the name */
+
+/* ---- sidebar: icon rail automatically between 901 and 1100px ---- */
+@media (max-width:1100px) and (min-width:901px){
+  .app{ grid-template-columns:var(--sidebar-w-collapsed) 1fr; }
+  /* undo app.css's 1000px off-canvas rules inside this range — the rail
+     stays in the grid; off-canvas + hamburger take over at 900px and below */
+  .sidebar{ position:sticky; left:auto; bottom:auto; width:auto; transform:none; z-index:40; }
+  .topbar__menu{ display:none; }
+  /* icon-rail look, mirroring app.css's .is-collapsed rules; the collapse
+     toggle would be a no-op here (the rail is forced), so the logo stands in */
+  .brandmark__text{ display:none; }
+  .sidebar__collapse{ display:none; }
+  .sidebar__brand{ padding:0; justify-content:center; }
+  .nav__label{ opacity:0; height:8px; overflow:hidden; padding:0; }
+  .nav__item{ justify-content:center; padding:9px; }
+  .nav__item span, .nav__badge{ display:none; }
+  .edge{ justify-content:center; padding:9px; }
+  .edge__txt{ display:none; }
+}
+
+/* ---- tables: the ledger keeps a readable width and scrolls in its card ---- */
+.tablewrap{ max-width:100%; }
+#txnCard .tbl{ min-width:920px; }
+
+/* ==========================================================================
+   Searchable master combos on the Transaction Details sheet — every field is
+   a type-ahead dropdown over its master list with an inline "＋ Add …" row.
+   ========================================================================== */
+.combo--master > .input{
+  width:100%; padding-right:30px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238794ab' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat; background-position:right 9px center; background-size:14px;
+}
+.combo--master > .input[readonly]{ background-image:none; }
+.inputgroup .combo{ flex:1; }
+.combo__add b{ color:var(--brand); }
+/* while a combo is open, let its menu escape the sheet's scroll clipping
+   (safe: on the screens where this card scrolls, the whole page scrolls
+   instead and the card body is not an overflow container) */
+.termwrap .terminal > .stack > .card:first-child .card__body:has(.combo.is-open){ overflow:visible; }
+
+/* ==========================================================================
+   Legacy "Transaction Summary Report" document — shown in the report pop-up
+   and embedded verbatim in the PDF / Excel exports.
+   ========================================================================== */
+.repdoc{ background:#fff; color:#111; padding:18px 22px; font-family:Arial,Helvetica,sans-serif; font-size:12px; overflow:auto; }
+.repdoc__head{ text-align:center; }
+.repdoc__head h3{ font-size:15px; font-weight:800; letter-spacing:.3px; }
+.repdoc__head p{ font-size:13px; font-weight:700; margin-top:2px; }
+.repdoc__filter{ margin:10px 0; font-size:11.5px; }
+table.repdoc__tbl{ width:100%; border-collapse:collapse; font-size:11.5px; }
+.repdoc__tbl th{ background:#f0f0f0 !important; color:#111 !important; border:1px solid #999; padding:4px 6px; text-align:left; white-space:nowrap; }
+.repdoc__tbl td{ border:1px solid #bbb; padding:3px 6px; white-space:nowrap; }
+.repdoc__tbl tbody tr:nth-child(even){ background:#fafafa; }
+@media print{ .repdoc{ padding:0; } }

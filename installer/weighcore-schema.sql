@@ -198,6 +198,26 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_TxnImg_Receipt' AND obje
     CREATE INDEX IX_TxnImg_Receipt ON dbo.TransactionImage(ScaleID, ReceiptTicketID);
 GO
 
+/* ---- audit trail for post-save corrections (weight edits etc.) ---- */
+IF OBJECT_ID('dbo.TransactionAudit') IS NULL
+CREATE TABLE dbo.TransactionAudit (
+    AuditID         UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+    ScaleID         NVARCHAR(20)  NULL,
+    ReceiptTicketID UNIQUEIDENTIFIER NULL,
+    TicketID        INT NULL,
+    Action          NVARCHAR(30)  NULL,   -- 'EditWeight'
+    FieldName       NVARCHAR(50)  NULL,   -- 'GrossWeight' / 'TareWeight'
+    OldValue        NVARCHAR(100) NULL,
+    NewValue        NVARCHAR(100) NULL,
+    Reason          NVARCHAR(400) NULL,
+    UserName        NVARCHAR(100) NULL,
+    CreatedAt       DATETIME NULL
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_TxnAudit_Scale_Rid' AND object_id=OBJECT_ID('dbo.TransactionAudit'))
+    CREATE INDEX IX_TxnAudit_Scale_Rid ON dbo.TransactionAudit(ScaleID, ReceiptTicketID);
+GO
+
 /* ---------- seed reference data (idempotent) ---------- */
 IF NOT EXISTS (SELECT 1 FROM dbo.Unit)
     INSERT INTO dbo.Unit (UnitName) VALUES (N'Kg'), (N'MT');

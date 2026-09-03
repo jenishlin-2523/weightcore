@@ -353,4 +353,27 @@ async function saveImage(cfg, img) {
   catch (e) { return { ok: false, error: e.message }; }
 }
 
-module.exports = { snapshot, nextTicketNo, saveTicket, saveVehicle, saveMaster, authenticate, createSalt, saveImage };
+/**
+ * Correct saved weights on a ticket via wb-edit.ps1 — one invocation per
+ * changed field, each atomic (update + net recompute + TransactionAudit row
+ * in one SQL transaction). payload: { rid, ticketNo, scaleId, reason,
+ * userName, changes: [{ field: 'GrossWeight'|'TareWeight', value }] }.
+ */
+async function editWeights(cfg, p) {
+  const allowed = { GrossWeight: 1, TareWeight: 1 };
+  const changes = ((p && p.changes) || []).filter((c) => c && allowed[c.field]);
+  if (!changes.length) return { ok: false, error: 'nothing to change' };
+  if (!p.rid) return { ok: false, error: 'ticket has no ReceiptTicketID' };
+  for (const c of changes) {
+    const args = ['-File', path.join(__dirname, 'wb-edit.ps1'), '-Server', cfg.server, '-Database', cfg.database,
+      '-ScaleID', String(p.scaleId || ''), '-Rid', String(p.rid), '-TicketID', String(p.ticketNo || 0),
+      '-Field', String(c.field), '-NewValue', String(c.value), '-Reason', String(p.reason || ''), '-UserName', String(p.userName || '')];
+    try {
+      const out = await runPs(args, 30000);
+      if (!/OK/.test(out || '')) return { ok: false, error: (out || 'edit failed').trim() };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
+  return { ok: true, changed: changes.length };
+}
+
+module.exports = { snapshot, nextTicketNo, saveTicket, saveVehicle, saveMaster, authenticate, createSalt, saveImage, editWeights };

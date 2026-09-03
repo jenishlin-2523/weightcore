@@ -318,19 +318,132 @@
     return DB.transactions.find(t => t.vehicleId === vehicleId && t.status === 'Complete') || null;
   }
 
+  /* ----------------------------------------------------------------------
+     Searchable master combos for the Transaction Details sheet.
+     Every field is a type-ahead dropdown over its master list, and a value
+     that doesn't exist yet can be added straight from the field: masters
+     (transporter/product/gate) are written to the live SQL master via
+     saveMaster, list fields (party, buyer, package…) extend their value
+     list — persisted per-terminal in localStorage and pre-seeded with every
+     distinct value already used on past tickets.
+     ---------------------------------------------------------------------- */
+  const LISTS_KEY = 'wc:fieldLists';
+  (function mergeLocalLists() {
+    try {
+      const extra = JSON.parse(localStorage.getItem(LISTS_KEY) || '{}');
+      Object.keys(extra).forEach(k => {
+        DB.fieldLists[k] = DB.fieldLists[k] || [];
+        (extra[k] || []).forEach(v => { if (DB.fieldLists[k].indexOf(v) < 0) DB.fieldLists[k].push(v); });
+      });
+    } catch (e) {}
+  })();
+  function rememberListValue(key, val) {
+    DB.fieldLists[key] = DB.fieldLists[key] || [];
+    if (DB.fieldLists[key].indexOf(val) < 0) DB.fieldLists[key].push(val);
+    try {
+      const extra = JSON.parse(localStorage.getItem(LISTS_KEY) || '{}');
+      extra[key] = extra[key] || [];
+      if (extra[key].indexOf(val) < 0) { extra[key].push(val); localStorage.setItem(LISTS_KEY, JSON.stringify(extra)); }
+    } catch (e) {}
+  }
+
+  let cfHistory = null;   // distinct cf values used on past tickets, built once
+  function cfOptions(key) {
+    if (!cfHistory) {
+      cfHistory = {};
+      DB.transactions.forEach(t => {
+        const c = t.cf || {};
+        Object.keys(c).forEach(k => {
+          const v = String(c[k] == null ? '' : c[k]).trim();
+          if (v) (cfHistory[k] = cfHistory[k] || {})[v] = 1;
+        });
+      });
+    }
+    const seen = {}, out = [];
+    const push = (v) => { const k = v.toLowerCase(); if (!seen[k]) { seen[k] = 1; out.push(v); } };
+    (DB.fieldLists[key] || []).forEach(push);
+    Object.keys(cfHistory[key] || {}).sort().forEach(push);
+    return out;
+  }
+
+  const gLabel = (id) => { const g = DB.map.gate[id]; return g ? g.name + ' (' + (g.type || 'BOTH') + ')' : ''; };
+
+  function auditAdd(table, text) {
+    DB.audit.unshift({
+      id: 'AUX' + Date.now(), table, op: 'INSERT', at: new Date(),
+      user: ((window.AUTH || {}).user || {}).username || 'operator', text, ref: null
+    });
+  }
+
+  /* Optimistic master insert: usable immediately under a provisional id; the
+     SQL IDENTITY replaces it when saveMaster returns. If SQL fails the record
+     stays local-only (the ticket still carries the NAME, exactly like the
+     legacy free-text flow), so the operator is never blocked. */
+  function addMasterRow(entity, pre, fields, arr, mapKey, picked) {
+    const rec = Object.assign({ id: pre + 'X' + Date.now() }, fields);
+    arr.push(rec); DB.map[mapKey][rec.id] = rec;
+    picked(rec);
+    const wc = window.weighcore;
+    if (wc && wc.data && wc.data.saveMaster) {
+      wc.data.saveMaster({ entity, id: null, fields: rec }).then(function (r) {
+        if (r && r.ok && r.id != null) {
+          delete DB.map[mapKey][rec.id];
+          const oldId = rec.id; rec.id = pre + r.id; DB.map[mapKey][rec.id] = rec;
+          if (TS.transporterId === oldId) TS.transporterId = rec.id;
+          if (TS.productId === oldId) TS.productId = rec.id;
+          if (TS.gateId === oldId) TS.gateId = rec.id;
+        } else {
+          U.toast('warn', 'Database save failed', ((r && r.error) || 'unknown error') + ' — ' + (fields.name || 'entry') + ' kept on this terminal only.');
+        }
+      }).catch(function () {
+        U.toast('warn', 'Database save failed', (fields.name || 'entry') + ' kept on this terminal only.');
+      });
+    }
+  }
+
+  const comboField = (o) =>
+    '<div class="field"><label class="field__label" for="' + o.id + '">' + esc(o.label) +
+      (o.req ? '<span class="req">*</span>' : '') + '</label>' +
+      '<div class="combo combo--master" data-combo="' + o.key + '">' +
+        '<input class="input" id="' + o.id + '" autocomplete="off" spellcheck="false"' +
+        ' value="' + esc(o.value || '') + '" placeholder="' + esc(o.placeholder || 'Type to search…') + '"' +
+        (o.maxLen ? ' maxlength="' + o.maxLen + '"' : '') + (o.lock ? ' readonly' : '') + '>' +
+        '<div class="combo__menu"></div></div>' +
+      (o.hint || '') +
+    '</div>';
+
+  /* the Receipt Details pane, extracted so field picks can refresh it in
+     place without re-rendering (and re-focusing) the whole terminal */
+  function receiptHtml() {
+    const veh = DB.map.vehicle[TS.vehicleId];
+    const t = tareOf(), g = grossOf(), n = netOf();
+    const rrow = (k, v) => '<div class="receipt__row"><dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd></div>';
+    return '<dl class="receipt">' +
+      rrow('Ticket No', TS.recallOf ? DB.transactions.find(x => x.id === TS.recallOf).ticketNo : TS.ticketNo) +
+      rrow('Vehicle No', veh ? veh.no : '—') +
+      rrow('Transporter', TS.transporterId ? aName(TS.transporterId) : '—') +
+      rrow('Product', TS.productId ? pName(TS.productId) : '—') +
+      rrow('Gate', TS.gateId ? gName(TS.gateId) : '—') +
+      DB.customFields.filter(f => f.visible).map(f => rrow(f.label, TS.cf[f.key] || '—')).join('') +
+      '<div class="receipt__rule"></div>' +
+      rrow('Tare Weight', t != null ? num(t) + ' kg' : '—') +
+      rrow('Gross Weight', g != null ? num(g) + ' kg' : '—') +
+      rrow('Net Weight', n != null ? num(n) + ' kg (' + mt(n, 3) + ' MT)' : '—') +
+      '</dl>';
+  }
+
   V.terminal = {
     render() {
       syncEdge();
       const wb = DB.map.wb[DB.settings.connectedScale] || { name: 'No scale', siteId: 'S1', indicator: '—', port: '—', baud: 0 };
-      const openTickets = DB.transactions.filter(t => t.status === 'Active' && t.passes.length);
       // one fixed screen, like the legacy create-transaction page — no page scroll
       return '<div class="termwrap">' +
         '<div class="termbar">' +
           '<span class="termbar__label">Load by Ticket/Vehicle No:</span>' +
-          '<select class="input" id="recall" style="max-width:300px">' +
-            '<option value="">— open tickets —</option>' +
-            openTickets.map(t => '<option value="' + t.id + '">#' + t.ticketNo + ' · ' + esc(vName(t.vehicleId)) + ' · ' + esc(pName(t.productId)) + '</option>').join('') +
-          '</select>' +
+          // type-ahead over the OPEN tickets — search by ticket, vehicle or product
+          '<div class="combo combo--master" style="flex:0 1 300px">' +
+            '<input class="input" id="recall" autocomplete="off" spellcheck="false" placeholder="— open tickets: type to search —">' +
+            '<div class="combo__menu"></div></div>' +
           '<button class="btn" id="btnReset">' + icon('refresh') + 'New<kbd>Ctrl</kbd><kbd>N</kbd></button>' +
           '<div class="spacer"></div>' +
           '<span class="termbar__scale">' + esc(wb.name) + ' · ' + esc(wb.port) + ' @ ' + wb.baud + '</span>' +
@@ -345,46 +458,32 @@
       const lockNote = lock ? U.callout('warn',
         '<b>Fields locked.</b> The first weighment is recorded — under <i>Global settings → lock after first pass</i> only the weight can change now.') : '';
 
-      const cfInput = (f) => {
-        const opts = DB.fieldLists[f.key];
-        const label = '<label class="field__label" for="' + f.key + '">' + esc(f.label) +
-          (f.required ? '<span class="req">*</span>' : '') + '</label>';
-        if (opts && opts.length) {
-          // controlled lists render as real dropdowns, like the master fields
-          const cur = TS.cf[f.key] || '';
-          const list = (!cur || opts.indexOf(cur) >= 0) ? opts : [cur].concat(opts);
-          return '<div class="field">' + label +
-            '<select class="input" id="' + f.key + '" data-cf="' + f.key + '"' + (lock ? ' disabled' : '') + '>' +
-            '<option value="">— select —</option>' +
-            list.map(v => '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(v) + '</option>').join('') +
-            '</select></div>';
-        }
-        return '<div class="field">' + label +
-          '<input class="input" id="' + f.key + '" data-cf="' + f.key + '" value="' + esc(TS.cf[f.key] || '') + '"' +
-          (lock ? ' readonly' : '') + ' placeholder="—" maxlength="' + f.maxLen + '">' +
-          '</div>';
-      };
-
       const veh = DB.map.vehicle[TS.vehicleId];
       const vehicleField =
         '<div class="field"><label class="field__label" for="vehicle">Vehicle<span class="req">*</span></label>' +
-          '<div class="inputgroup"><input class="input" id="vehicle" autocomplete="off" placeholder="Type or scan a number plate…" value="' + esc(veh ? veh.no : '') + '"' + (lock ? ' readonly' : '') + '>' +
-          '<button class="btn" id="btnAddVeh" title="Quick-add vehicle"' + (lock ? ' disabled' : '') + '>' + icon('plus') + '</button></div>' +
-          '<div class="combo" style="position:relative"><div class="combo__menu" id="vehMenu"></div></div>' +
+          '<div class="inputgroup">' +
+            '<div class="combo combo--master" data-combo="vehicle">' +
+              '<input class="input" id="vehicle" autocomplete="off" spellcheck="false" placeholder="Type or scan a number plate…" value="' + esc(veh ? veh.no : '') + '"' + (lock ? ' readonly' : '') + '>' +
+              '<div class="combo__menu"></div></div>' +
+            '<button class="btn" id="btnAddVeh" title="Quick-add vehicle"' + (lock ? ' disabled' : '') + '>' + icon('plus') + '</button></div>' +
           (veh ? '<div class="field__hint">' + (veh.tare ? 'Stored tare <b>' + num(veh.tare) + ' kg</b>' : '<span style="color:var(--danger)">No stored tare on file</span>') +
             (veh.type ? ' · ' + esc(veh.type) : '') + ' · ' + esc(aName(veh.accountId)) + '</div>' : '') +
         '</div>';
 
       // Masters down the left column, configurable fields down the right —
-      // the same two-column sheet as the legacy Transaction Details page.
+      // every field is a searchable combo over its master list, and a value
+      // not on file yet can be added from the field itself ("＋ Add …" row).
       const masters = [
         vehicleField,
-        U.field({ label: 'Transporter', id: 'transporter', req: true, type: 'select', value: TS.transporterId, disabled: lock, options: [{ v: '', t: '— select —' }].concat(transporters().map(a => ({ v: a.id, t: a.name }))) }),
-        U.field({ label: 'Product', id: 'product', req: true, type: 'select', value: TS.productId, disabled: lock, options: [{ v: '', t: '— select —' }].concat(DB.products.filter(p => p.active && (!p.txnType || p.txnType === 'All' || p.txnType === TS.txnType)).map(p => ({ v: p.id, t: p.name }))) }),
-        U.field({ label: 'Gate', id: 'gate', req: true, type: 'select', value: TS.gateId, disabled: lock, options: [{ v: '', t: '— select —' }].concat(DB.gates.filter(g => g.active).map(g => ({ v: g.id, t: g.name + ' (' + g.type + ')' }))) }),
+        comboField({ key: 'transporter', id: 'transporter', label: 'Transporter', req: true, lock, placeholder: 'Search or add transporter…', value: TS.transporterId ? aName(TS.transporterId) : '' }),
+        comboField({ key: 'product', id: 'product', label: 'Product', req: true, lock, placeholder: 'Search or add product…', value: TS.productId ? pName(TS.productId) : '' }),
+        comboField({ key: 'gate', id: 'gate', label: 'Gate', req: true, lock, placeholder: 'Search or add gate…', value: gLabel(TS.gateId) }),
         U.field({ label: 'Transaction Datetime', id: 'txnAt', type: 'datetime-local', value: U.fInput(DB.NOW), disabled: !DB.settings.enableTxnDateTime || lock })
       ];
-      const cfs = DB.customFields.filter(f => f.visible).map(cfInput);
+      const cfs = DB.customFields.filter(f => f.visible).map(f => comboField({
+        key: f.key, id: f.key, label: f.label, req: f.required, maxLen: f.maxLen, lock,
+        placeholder: 'Search or add…', value: TS.cf[f.key] || ''
+      }));
       const sheet = [];
       for (let i = 0; i < Math.max(masters.length, cfs.length); i++) {
         sheet.push(masters[i] || '<div></div>', cfs[i] || '<div></div>');
@@ -437,10 +536,9 @@
             '<svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" style="opacity:.75"><path d="M9 7V2.5M15 7V2.5M7 7h10v3.5a5 5 0 0 1-10 0V7ZM12 15.5V21.5"/></svg>' +
             '<div class="led__meta" style="margin-top:8px"><span class="ledpill">Indicator disconnected — captures blocked until the link returns</span></div>' +
           '</div>'
-        : '<div class="led is-settling" id="led"><div class="led__scan"></div>' +
+        : '<div class="led is-stable" id="led"><div class="led__scan"></div>' +
             '<div class="led__value" id="ledVal">' + num(TS.live || 0) + '<sub>kg</sub></div>' +
             '<div class="led__meta">' +
-              '<span class="ledpill" id="stablePill">Settling</span>' +
               '<span class="ledpill">Capacity ' + num(wb.capacity) + ' kg</span>' +
             '</div></div>';
 
@@ -448,19 +546,8 @@
       TS.passes.forEach(p => (p.images || []).forEach((src, i) =>
         shots.push({ src, cap: 'camera ' + (i + 1) + ' Weighment: #' + p.seq })));
 
-      const rrow = (k, v) => '<div class="receipt__row"><dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd></div>';
-      const receipt = '<dl class="receipt">' +
-        rrow('Ticket No', TS.recallOf ? DB.transactions.find(x => x.id === TS.recallOf).ticketNo : TS.ticketNo) +
-        rrow('Vehicle No', veh ? veh.no : '—') +
-        rrow('Transporter', TS.transporterId ? aName(TS.transporterId) : '—') +
-        rrow('Product', TS.productId ? pName(TS.productId) : '—') +
-        rrow('Gate', TS.gateId ? gName(TS.gateId) : '—') +
-        DB.customFields.filter(f => f.visible).map(f => rrow(f.label, TS.cf[f.key] || '—')).join('') +
-        '<div class="receipt__rule"></div>' +
-        rrow('Tare Weight', t != null ? num(t) + ' kg' : '—') +
-        rrow('Gross Weight', g != null ? num(g) + ' kg' : '—') +
-        rrow('Net Weight', n != null ? num(n) + ' kg (' + mt(n, 3) + ' MT)' : '—') +
-        '</dl>';
+      // field picks refresh #rcpBox in place, so typing focus is never lost
+      const receipt = '<div id="rcpBox">' + receiptHtml() + '</div>';
       const gallery = shots.length
         ? '<div class="gallery">' + shots.map(s =>
             '<figure class="shot"><img src="' + s.src + '" alt="' + esc(s.cap) + '">' +
@@ -531,12 +618,10 @@
           TS.live = Math.max(0, Math.round(d.value || 0));
           TS.stable = !!d.stable;
           if (!EDGE.connected) { EDGE.connected = true; repaint(); return; }  // data proves the link
-          const ledVal = U.$('#ledVal'), led = U.$('#led'), pill = U.$('#stablePill');
+          const ledVal = U.$('#ledVal'), led = U.$('#led');
           if (ledVal) {
             ledVal.innerHTML = num(TS.live) + '<sub>kg</sub>';
-            led.className = 'led ' + (TS.stable ? 'is-stable' : 'is-settling');
-            pill.textContent = TS.stable ? 'Stable' : 'Settling';
-            pill.className = 'ledpill ' + (TS.stable ? 'is-live' : 'is-hold');
+            led.className = 'led is-stable';
           }
         };
         window.addEventListener('wc:weight', weightSub);
@@ -553,22 +638,14 @@
         // 6-per-host limit, after which new tiles hang on the placeholder.
         U.$$('.cam img', term).forEach(im => { im.onerror = null; im.removeAttribute('src'); });
         term.innerHTML = self.left() + self.right();
-        wireCombo();
+        wireMasterCombos();
         refreshRecall();
         if (self._wireCams) self._wireCams();
       }
 
-      // Keep the "Load by Ticket/Vehicle No" list current — a Tare weighment just
-      // saved must appear immediately so the operator can recall it for the Gross.
-      function refreshRecall() {
-        const rec = U.$('#recall', root);
-        if (!rec) return;
-        const open = DB.transactions.filter(t => t.status === 'Active' && t.passes.length);
-        const keep = rec.value;
-        rec.innerHTML = '<option value="">— open tickets —</option>' +
-          open.map(t => '<option value="' + t.id + '">#' + t.ticketNo + ' · ' + esc(vName(t.vehicleId)) + ' · ' + esc(pName(t.productId)) + '</option>').join('');
-        rec.value = (keep && open.some(t => t.id === keep)) ? keep : '';
-      }
+      // The recall combo builds its option list live at every open, so a Tare
+      // weighment just saved is recallable immediately — nothing to refresh.
+      function refreshRecall() {}
 
       /* live indicator simulation */
       function pickTarget() {
@@ -594,12 +671,10 @@
           TS.stable = !settling;
         }
 
-        const ledVal = U.$('#ledVal'), led = U.$('#led'), pill = U.$('#stablePill');
+        const ledVal = U.$('#ledVal'), led = U.$('#led');
         if (ledVal) {
           ledVal.innerHTML = num(TS.live) + '<sub>kg</sub>';
-          led.className = 'led ' + (TS.stable ? 'is-stable' : 'is-settling');
-          pill.textContent = TS.stable ? 'Stable' : 'Settling';
-          pill.className = 'ledpill ' + (TS.stable ? 'is-live' : 'is-hold');
+          led.className = 'led is-stable';
         }
         const chip = U.$('#scaleChipWeight'); if (chip) chip.textContent = num(TS.live) + ' kg';
         U.$$('[data-clock]').forEach(el => {
@@ -632,50 +707,163 @@
         }, 2600);
       }
 
-      /* vehicle type-ahead */
-      function wireCombo() {
-        const inp = U.$('#vehicle', term), menu = U.$('#vehMenu', term);
-        if (!inp || !menu) return;
-        const wrap = menu.parentElement;
-        const show = (q) => {
-          const list = DB.vehicles.filter(v => v.active && (!q || v.no.toLowerCase().includes(q.toLowerCase()))).slice(0, 8);
-          menu.innerHTML = list.length ? list.map(v =>
-            '<div class="combo__opt" data-v="' + v.id + '"><b>' + esc(v.no) + '</b>' +
-            '<small>' + esc(v.type || 'type not set') + '</small><span class="spacer"></span>' +
-            '<small class="mono">' + (v.tare ? num(v.tare) + ' kg' : '⚠ no tare') + '</small></div>').join('')
-            : '<div class="combo__empty">No vehicle matches — use <b>+</b> to add one</div>';
-          wrap.classList.add('is-open');
-        };
-        inp.addEventListener('focus', () => show(inp.value));
-        inp.addEventListener('input', () => show(inp.value));
-        inp.addEventListener('blur', () => setTimeout(() => wrap.classList.remove('is-open'), 160));
-        menu.addEventListener('mousedown', (e) => {
-          const o = e.target.closest('[data-v]'); if (!o) return;
-          const v = DB.map.vehicle[o.dataset.v];
-          TS.vehicleId = v.id;
-          // fetch the remaining details from this vehicle's most recent ticket,
-          // like the legacy "Load by Vehicle No" (transactions are newest-first)
-          const lastT = DB.transactions.find(t => t.vehicleId === v.id) || null;
-          if (lastT) {
-            if (lastT.type) TS.txnType = lastT.type;
-            if (lastT.direction) TS.direction = lastT.direction;
-            if (lastT.transporterId) TS.transporterId = lastT.transporterId;
-            if (lastT.productId) TS.productId = lastT.productId;
-            if (lastT.gateId) TS.gateId = lastT.gateId;
-            const c = lastT.cf || {};
-            if (c.cf2) TS.cf.cf2 = c.cf2;
-            if (c.cf3) TS.cf.cf3 = c.cf3;
-            if (c.cf4) TS.cf.cf4 = c.cf4;
+      /* searchable master combos — every Transaction Details field */
+      function refreshReceipt() {
+        const box = U.$('#rcpBox', term); if (box) box.innerHTML = receiptHtml();
+        const btn = U.$('#btnContinue', term); if (btn) btn.disabled = !requiredOk();
+      }
+      function pickVehicle(vid) {
+        if (!vid) { TS.vehicleId = ''; TS.target = pickTarget(); repaint(); return; }
+        const v = DB.map.vehicle[vid]; if (!v) return;
+        TS.vehicleId = v.id;
+        // fetch the remaining details from this vehicle's most recent ticket,
+        // like the legacy "Load by Vehicle No" (transactions are newest-first)
+        const lastT = DB.transactions.find(t => t.vehicleId === v.id) || null;
+        if (lastT) {
+          if (lastT.type) TS.txnType = lastT.type;
+          if (lastT.direction) TS.direction = lastT.direction;
+          if (lastT.transporterId) TS.transporterId = lastT.transporterId;
+          if (lastT.productId) TS.productId = lastT.productId;
+          if (lastT.gateId) TS.gateId = lastT.gateId;
+          const c = lastT.cf || {};
+          if (c.cf2) TS.cf.cf2 = c.cf2;
+          if (c.cf3) TS.cf.cf3 = c.cf3;
+          if (c.cf4) TS.cf.cf4 = c.cf4;
+        }
+        TS.transporterId = TS.transporterId || v.accountId;
+        if (v.type) TS.cf.cf1 = v.type;
+        TS.target = pickTarget();
+        repaint();
+        const vi = U.$('#vehicle', term); if (vi) vi.focus();
+        U.toast('info', 'Vehicle loaded', v.no +
+          (lastT ? ' · details fetched from ticket #' + lastT.ticketNo : (v.tare ? ' · stored tare ' + num(v.tare) + ' kg' : ' · no stored tare on file')));
+      }
+      function comboDefs() {
+        const defs = {
+          vehicle: {
+            list: () => DB.vehicles.filter(v => v.active).map(v => ({ v: v.id, t: v.no,
+              sub: v.type || 'type not set', right: v.tare ? num(v.tare) + ' kg' : '⚠ no tare' })),
+            display: () => { const v = DB.map.vehicle[TS.vehicleId]; return v ? v.no : ''; },
+            pick: pickVehicle,
+            addLabel: (q) => 'Add vehicle “' + q.toUpperCase() + '”…',
+            add: (no) => quickAddVehicle(repaint, no.toUpperCase())
+          },
+          transporter: {
+            list: () => transporters().map(a => ({ v: a.id, t: a.name })),
+            display: () => TS.transporterId ? aName(TS.transporterId) : '',
+            pick: (id) => { TS.transporterId = id; refreshReceipt(); },
+            addLabel: (q) => 'Add transporter “' + q + '”',
+            add: (name) => addMasterRow('accounts', 'A',
+              { name, phone: '', city: '', isTransporter: true, isAccount: false, active: true },
+              DB.accounts, 'account', (rec) => {
+                TS.transporterId = rec.id; refreshReceipt();
+                auditAdd('Account', 'Transporter ' + name + ' added from the terminal');
+                U.toast('ok', 'Transporter added', name + ' is on file and selected.');
+              })
+          },
+          product: {
+            list: () => DB.products.filter(p => p.active && (!p.txnType || p.txnType === 'All' || p.txnType === TS.txnType)).map(p => ({ v: p.id, t: p.name })),
+            display: () => TS.productId ? pName(TS.productId) : '',
+            pick: (id) => { TS.productId = id; refreshReceipt(); },
+            addLabel: (q) => 'Add product “' + q + '”',
+            add: (name) => addMasterRow('products', 'P',
+              { name, code: '', desc: '', txnType: 'All', active: true },
+              DB.products, 'product', (rec) => {
+                TS.productId = rec.id; refreshReceipt();
+                auditAdd('Product', 'Product ' + name + ' added from the terminal');
+                U.toast('ok', 'Product added', name + ' is on file and selected.');
+              })
+          },
+          gate: {
+            list: () => DB.gates.filter(g => g.active).map(g => ({ v: g.id, t: g.name + ' (' + (g.type || 'BOTH') + ')' })),
+            display: () => gLabel(TS.gateId),
+            pick: (id) => { TS.gateId = id; refreshReceipt(); },
+            addLabel: (q) => 'Add gate “' + q + '”',
+            add: (name) => addMasterRow('gates', 'G',
+              { name, type: 'BOTH', active: true },
+              DB.gates, 'gate', (rec) => {
+                TS.gateId = rec.id; refreshReceipt();
+                auditAdd('Gate', 'Gate ' + name + ' added from the terminal');
+                U.toast('ok', 'Gate added', name + ' is on file and selected.');
+              })
           }
-          TS.transporterId = TS.transporterId || v.accountId;
-          if (v.type) TS.cf.cf1 = v.type;
-          TS.target = pickTarget();
-          repaint();
-          U.toast('info', 'Vehicle loaded', v.no +
-            (lastT ? ' · details fetched from ticket #' + lastT.ticketNo : (v.tare ? ' · stored tare ' + num(v.tare) + ' kg' : ' · no stored tare on file')));
+        };
+        DB.customFields.filter(f => f.visible).forEach(f => {
+          defs[f.key] = {
+            list: () => cfOptions(f.key).map(v => ({ v, t: v })),
+            display: () => TS.cf[f.key] || '',
+            pick: (v) => { TS.cf[f.key] = v; refreshReceipt(); },
+            addLabel: (q) => 'Add “' + q + '” to ' + f.label,
+            add: (val) => {
+              rememberListValue(f.key, val);
+              TS.cf[f.key] = val; refreshReceipt();
+              U.toast('ok', f.label + ' added', '“' + val + '” saved to the list and selected.');
+            }
+          };
+        });
+        return defs;
+      }
+      function wireMasterCombos() {
+        const defs = comboDefs();
+        U.$$('[data-combo]', term).forEach(wrap => {
+          const def = defs[wrap.dataset.combo];
+          const inp = wrap.querySelector('input'), menu = wrap.querySelector('.combo__menu');
+          if (!def || !inp || !menu || inp.readOnly || inp.dataset.wired) return;
+          inp.dataset.wired = '1';
+          let items = [], canAdd = false, cursor = 0;
+          const close = () => wrap.classList.remove('is-open');
+          const build = () => {
+            const q = inp.value.trim(), ql = q.toLowerCase();
+            const all = def.list();
+            items = (ql ? all.filter(o => String(o.t).toLowerCase().indexOf(ql) >= 0) : all).slice(0, 30);
+            canAdd = !!(q && def.add && !all.some(o => String(o.t).toLowerCase() === ql));
+            const last = items.length - (canAdd ? 0 : 1);
+            if (cursor > last) cursor = last;
+            if (cursor < 0) cursor = 0;
+            menu.innerHTML =
+              items.map((o, i) =>
+                '<div class="combo__opt' + (i === cursor ? ' is-cursor' : '') + '" data-i="' + i + '"><b>' + esc(o.t) + '</b>' +
+                (o.sub ? '<small>' + esc(o.sub) + '</small>' : '') +
+                (o.right ? '<span class="spacer"></span><small class="mono">' + esc(o.right) + '</small>' : '') + '</div>').join('') +
+              (canAdd ? '<div class="combo__opt combo__add' + (cursor === items.length ? ' is-cursor' : '') + '" data-add="1"><b>＋ ' + esc(def.addLabel(q)) + '</b></div>' : '') +
+              (!items.length && !canAdd ? '<div class="combo__empty">Nothing matches</div>' : '');
+            wrap.classList.add('is-open');
+          };
+          const choose = (i) => {
+            if (canAdd && i === items.length) { const q = inp.value.trim(); close(); def.add(q); }
+            else if (items[i]) {
+              def.pick(items[i].v);
+              const el = U.$('#' + inp.id, term); if (el) el.value = def.display();
+              close();
+            }
+          };
+          inp.addEventListener('focus', () => { inp.select(); cursor = 0; build(); });
+          inp.addEventListener('input', () => { cursor = 0; build(); });
+          inp.addEventListener('keydown', (e) => {
+            if (!wrap.classList.contains('is-open')) {
+              if (e.key === 'ArrowDown') { e.preventDefault(); cursor = 0; build(); }
+              return;
+            }
+            const max = items.length - (canAdd ? 0 : 1);
+            if (e.key === 'ArrowDown') { e.preventDefault(); cursor = Math.min(cursor + 1, max); build(); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); cursor = Math.max(cursor - 1, 0); build(); }
+            else if (e.key === 'Enter') { e.preventDefault(); choose(cursor); }
+            else if (e.key === 'Escape') { close(); }
+          });
+          inp.addEventListener('blur', () => setTimeout(() => {
+            close();
+            const el = U.$('#' + inp.id, term); if (!el) return;   // a repaint replaced the DOM
+            if (!el.value.trim() && def.display()) def.pick('');   // emptied on purpose → clear
+            el.value = def.display();                              // otherwise resync to the picked value
+          }, 160));
+          menu.addEventListener('mousedown', (e) => {
+            e.preventDefault();                                    // keep typing focus in the input
+            const add = e.target.closest('[data-add]'); if (add) { choose(items.length); return; }
+            const o = e.target.closest('[data-i]'); if (o) choose(parseInt(o.dataset.i, 10));
+          });
         });
       }
-      wireCombo();
+      wireMasterCombos();
 
       /* delegated events */
       term.addEventListener('click', (e) => {
@@ -703,29 +891,22 @@
         if (e.target.closest('#btnCapture')) { capture(); return; }
         if (e.target.closest('#btnContinue')) { complete(); return; }
         if (e.target.closest('#btnCancel')) { resetTS(); repaint(); U.toast('info', 'Cleared', 'Terminal reset for the next truck.'); return; }
-        if (e.target.closest('#btnAddVeh')) { quickAddVehicle(repaint); return; }
+        if (e.target.closest('#btnAddVeh')) {
+          const vi = U.$('#vehicle', term);
+          quickAddVehicle(repaint, vi && !DB.map.vehicle[TS.vehicleId] ? vi.value.trim().toUpperCase() : '');
+          return;
+        }
       });
 
-      term.addEventListener('change', (e) => {
-        const id = e.target.id;
-        if (id === 'transporter') TS.transporterId = e.target.value;
-        else if (id === 'product') TS.productId = e.target.value;
-        else if (id === 'gate') TS.gateId = e.target.value;
-        else if (e.target.dataset.cf) TS.cf[e.target.dataset.cf] = e.target.value;
-        else if (id === 'manualW') TS.manualWeight = e.target.value;
-        const btn = U.$('#btnContinue', term); if (btn) btn.disabled = !requiredOk();
-      });
+      // master/list fields update TS through their combo picks; only the
+      // manual-weight box still syncs by raw typing
       term.addEventListener('input', (e) => {
-        if (e.target.dataset.cf) TS.cf[e.target.dataset.cf] = e.target.value;
         if (e.target.id === 'manualW') TS.manualWeight = e.target.value;
         const btn = U.$('#btnContinue', term); if (btn) btn.disabled = !requiredOk();
       });
 
-      /* recall */
-      const rec = U.$('#recall', root);
-      if (rec) rec.addEventListener('change', () => {
-        if (!rec.value) { resetTS(); repaint(); return; }
-        const t = DB.transactions.find(x => x.id === rec.value);
+      /* recall — type-ahead over the open tickets (ticket / vehicle / product) */
+      function recallTicket(t) {
         Object.assign(TS, {
           recallOf: t.id, ticketNo: t.ticketNo, rid: t.rid || genRid(),   // keep ticket no + id so Gross photos file under the SAME transaction as the Tare photos
           mode: t.mode, txnType: t.type, direction: t.direction || 'Plant to Yard',
@@ -737,7 +918,50 @@
         TS.target = pickTarget();
         repaint();
         U.toast('info', 'Ticket #' + t.ticketNo + ' recalled', 'Fields locked — capture the closing weight.');
-      });
+      }
+      const rec = U.$('#recall', root);
+      if (rec) {
+        const wrap = rec.closest('.combo'), menu = wrap.querySelector('.combo__menu');
+        let items = [], cursor = 0;
+        const close = () => wrap.classList.remove('is-open');
+        const build = () => {
+          const q = rec.value.trim().toLowerCase();
+          items = DB.transactions.filter(t => t.status === 'Active' && t.passes.length).filter(t => !q ||
+            String(t.ticketNo).indexOf(q) >= 0 ||
+            vName(t.vehicleId).toLowerCase().indexOf(q) >= 0 ||
+            pName(t.productId).toLowerCase().indexOf(q) >= 0).slice(0, 20);
+          if (cursor > items.length - 1) cursor = items.length - 1;
+          if (cursor < 0) cursor = 0;
+          menu.innerHTML = items.length ? items.map((t, i) =>
+            '<div class="combo__opt' + (i === cursor ? ' is-cursor' : '') + '" data-i="' + i + '"><b>#' + t.ticketNo + '</b>' +
+            '<small>' + esc(vName(t.vehicleId)) + ' · ' + esc(pName(t.productId)) + '</small></div>').join('')
+            : '<div class="combo__empty">No open ticket matches</div>';
+          wrap.classList.add('is-open');
+        };
+        const choose = (i) => {
+          const t = items[i]; if (!t) return;
+          rec.value = '#' + t.ticketNo + ' · ' + vName(t.vehicleId);
+          close();
+          recallTicket(t);
+        };
+        rec.addEventListener('focus', () => { rec.select(); cursor = 0; build(); });
+        rec.addEventListener('input', () => { cursor = 0; build(); });
+        rec.addEventListener('keydown', (e) => {
+          if (!wrap.classList.contains('is-open')) {
+            if (e.key === 'ArrowDown') { e.preventDefault(); cursor = 0; build(); }
+            return;
+          }
+          if (e.key === 'ArrowDown') { e.preventDefault(); cursor = Math.min(cursor + 1, items.length - 1); build(); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); cursor = Math.max(cursor - 1, 0); build(); }
+          else if (e.key === 'Enter') { e.preventDefault(); choose(cursor); }
+          else if (e.key === 'Escape') close();
+        });
+        rec.addEventListener('blur', () => setTimeout(close, 160));
+        menu.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          const o = e.target.closest('[data-i]'); if (o) choose(parseInt(o.dataset.i, 10));
+        });
+      }
       const br = U.$('#btnReset', root);
       if (br) br.addEventListener('click', () => { resetTS(); if (rec) rec.value = ''; repaint(); });
 
@@ -754,9 +978,14 @@
           if (!w || w <= 0) {
             U.toast('warn', 'No weight on the bridge', 'The indicator reads 0 kg — position the vehicle on the scale, or use Manual.'); return;
           }
-          if (!TS.stable) {
-            U.toast('warn', 'Reading not stable', 'Wait for the indicator to settle, or switch to manual.'); return;
-          }
+          // no stability gate: Capture takes the reading and the images the
+          // moment the button is pressed, exactly like the legacy terminal
+        }
+        // a fresh Double ticket takes exactly ONE weighment here: store it with
+        // Continue, then recall the ticket for the closing weighment — never
+        // two captures back-to-back on the same standing truck
+        if (TS.mode === 'Double' && !TS.recallOf && TS.passes.length >= 1) {
+          U.toast('warn', 'First weighment already captured', 'Press Continue (F7) to store the ticket — recall it by ticket/vehicle no for the closing weighment.'); return;
         }
         if (TS.passes.some(p => p.kind === TS.weighType) && TS.mode !== 'Multi') {
           U.toast('warn', 'Already captured', 'A ' + TS.weighType.toLowerCase() + ' weight exists on this ticket.'); return;
@@ -783,7 +1012,9 @@
         U.toast('ok', TS.weighType + ' captured — ' + num(w) + ' kg',
           nCam + ' camera image' + (nCam === 1 ? '' : 's') + ' attached to pass ' + TS.passes.length +
           (TS.capture === 'manual' ? ' · marked manual ✱' : ''));
-        TS.weighType = TS.weighType === 'Tare' ? 'Gross' : 'Tare';
+        // only Multi mode rolls to the next weighment type on the same form —
+        // a Double ticket's second entry happens via recall, never here
+        if (TS.mode === 'Multi') TS.weighType = TS.weighType === 'Tare' ? 'Gross' : 'Tare';
         TS.target = pickTarget();
         repaint();
       }
@@ -900,13 +1131,13 @@
     }
   };
 
-  function quickAddVehicle(after) {
+  function quickAddVehicle(after, prefillNo) {
     U.openModal(
       '<div class="modal__head"><div><div class="card__title">Quick-add vehicle</div>' +
       '<div class="card__sub">Stays on the terminal — no navigation, no lost keystrokes</div></div>' +
       '<div class="spacer"></div><button class="iconbtn" data-close>' + icon('x') + '</button></div>' +
       '<div class="modal__body"><div class="formgrid formgrid--2">' +
-      U.field({ label: 'Vehicle number', id: 'qvNo', req: true, placeholder: 'TN00XX0000' }) +
+      U.field({ label: 'Vehicle number', id: 'qvNo', req: true, placeholder: 'TN00XX0000', value: prefillNo || '' }) +
       U.field({ label: 'Vehicle type', id: 'qvType', type: 'select', options: DB.fieldLists.cf1.map(v => ({ v, t: v })) }) +
       U.field({ label: 'Transporter', id: 'qvAcc', type: 'select', options: [{ v: '', t: '— optional —' }].concat(transporters().map(a => ({ v: a.id, t: a.name }))) }) +
       U.field({ label: 'Stored tare (kg)', id: 'qvTare', type: 'number', placeholder: 'optional', hint: 'Leave blank to capture it on the bridge' }) +
@@ -941,6 +1172,186 @@
           else { addLocal('VX' + Date.now()); U.toast('warn', 'Database save failed', 'Vehicle kept on screen only — ' + ((r && r.error) || 'unknown error')); }
         }).catch(function () { addLocal('VX' + Date.now()); U.toast('warn', 'Database save failed', 'Vehicle kept on screen only.'); });
       } else addLocal('V' + (DB.vehicles.length + 1));
+    });
+  }
+
+  /* ----------------------------------------------------------------------
+     Edit weights on a saved ticket — Super Admin only (same gate as delete:
+     a weighment ticket is a commercial record). The backend writes the old
+     value, new value, reason and username to dbo.TransactionAudit in the
+     SAME transaction as the weight change — no audit row, no edit.
+     ---------------------------------------------------------------------- */
+  function editWeightsFlow(t) {
+    if (!window.AUTH.canDelete()) { U.toast('danger', 'Not permitted', 'Only a Super Administrator can edit saved weights.'); return; }
+    const curT = t.tare, curG = t.gross, curN = (curG != null && curT != null) ? curG - curT : null;
+    const hasLive = !!(window.weighcore && window.weighcore.getWeight && window.weighcore.listCameras);
+    const wcurr = (label, v) =>
+      '<div class="card" style="padding:11px 13px"><div class="field__label">' + label + '</div>' +
+      '<div class="mono" style="font-size:18px;font-weight:700">' + (v != null ? num(v) : '—') + '</div>' +
+      '<div class="tiny dim">kg</div></div>';
+    U.openModal(
+      '<div class="modal__head"><div><div class="card__title">Edit weights — ticket #' + t.ticketNo + '</div>' +
+      '<div class="card__sub">' + esc(vName(t.vehicleId)) + ' · ' + esc(pName(t.productId)) + '</div></div>' +
+      '<div class="spacer"></div><button class="iconbtn" data-close>' + icon('x') + '</button></div>' +
+      '<div class="modal__body">' +
+      U.callout('warn', '<b>This corrects a commercial record.</b> The old value, new value, your username and the reason are written permanently to the audit table. The original weighment times stay unchanged.') +
+      '<div style="height:var(--sp-4)"></div>' +
+      '<div class="grid" style="grid-template-columns:repeat(3,1fr);gap:10px">' +
+        wcurr('Current Tare', curT) + wcurr('Current Gross', curG) + wcurr('Current Net', curN) +
+      '</div>' +
+      '<div style="height:var(--sp-4)"></div>' +
+      // live bridge view — the truck stands on the scale while you correct:
+      // both cameras stream here and the indicator weight can be captured
+      // straight into either field below
+      (hasLive
+        ? '<div class="cockpit" style="margin-bottom:var(--sp-4)">' +
+            '<div class="cams" style="border-top:0">' +
+              '<figure class="cam"><img id="ewCam1" alt="Camera 1 live"><figcaption class="cam__label">Camera 1</figcaption></figure>' +
+              '<figure class="cam"><img id="ewCam2" alt="Camera 2 live"><figcaption class="cam__label">Camera 2</figcaption></figure>' +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px">' +
+              '<b class="mono" id="ewLive" style="font-size:26px;color:#5eead4">— kg</b>' +
+              '<div class="spacer"></div>' +
+              '<button class="btn btn--sm" id="ewUseT">' + icon('download') + 'Use as tare</button>' +
+              '<button class="btn btn--sm btn--primary" id="ewUseG">' + icon('download') + 'Use as gross</button>' +
+            '</div>' +
+          '</div>'
+        : '') +
+      '<div class="formgrid formgrid--2">' +
+        U.field({ label: 'New tare (kg)', id: 'ewTare', type: 'number', value: curT != null ? curT : '' }) +
+        U.field({ label: 'New gross (kg)', id: 'ewGross', type: 'number', value: curG != null ? curG : '' }) +
+      '</div>' +
+      '<div style="height:var(--sp-3)"></div>' +
+      '<div class="row"><div class="field__label">New net</div>' +
+        '<b class="mono" id="ewNet" style="font-size:16px">' + (curN != null ? num(curN) + ' kg' : '—') + '</b></div>' +
+      '<div style="height:var(--sp-3)"></div>' +
+      U.field({ label: 'Reason for change', id: 'ewWhy', req: true, span2: true,
+        placeholder: 'e.g. operator captured gross before loading — corrected from printed slip',
+        hint: 'Required, at least 5 characters. Recorded against your username in TransactionAudit.' }) +
+      ((window.weighcore && window.weighcore.captureForTxn)
+        ? '<div style="height:var(--sp-3)"></div>' +
+          '<label class="check"><input type="checkbox" id="ewCap" checked> Capture camera evidence now — both cameras fire when you save</label>'
+        : '') +
+      '</div>' +
+      '<div class="modal__foot"><button class="btn btn--primary" id="ewSave" disabled>' + icon('save') + 'Save correction</button>' +
+      '<button class="btn" data-close>Cancel</button></div>');
+
+    const $t = U.$('#ewTare'), $g = U.$('#ewGross'), $w = U.$('#ewWhy'), $s = U.$('#ewSave'), $n = U.$('#ewNet');
+    const val = (el) => { const x = parseInt(el.value, 10); return isFinite(x) ? x : null; };
+    const sync = () => {
+      const nt = val($t), ng = val($g);
+      const nn = (nt != null && ng != null) ? ng - nt : null;
+      $n.textContent = nn != null ? num(nn) + ' kg' : '—';
+      $n.style.color = (nn != null && nn < 0) ? 'var(--danger)' : '';
+      const changed = (nt != null && nt !== curT) || (ng != null && ng !== curG);
+      const valid = nt != null && ng != null && nt >= 0 && ng >= 0 && nn != null && nn >= 0;
+      $s.disabled = !(changed && valid && $w.value.trim().length >= 5);
+    };
+    [$t, $g, $w].forEach((el) => el.addEventListener('input', sync));
+
+    // live indicator + cameras inside the modal: capture the REAL weight off
+    // the truck standing on the bridge instead of keying it from memory
+    if (hasLive) {
+      let liveW = 0;
+      const camImgs = [];
+      const onW = (e2) => {
+        const d = e2.detail || {};
+        liveW = Math.max(0, Math.round(d.value || 0));
+        const lv = document.getElementById('ewLive');
+        if (lv) lv.textContent = num(liveW) + ' kg';
+      };
+      window.addEventListener('wc:weight', onW);
+      try { window.weighcore.getWeight().then((d) => onW({ detail: d })).catch(() => {}); } catch (e2) {}
+      window.weighcore.listCameras().then((cs) => {
+        (cs || []).slice(0, 2).forEach((c, i) => {
+          const im = document.getElementById('ewCam' + (i + 1));
+          if (im && c.stream) { camImgs.push(im); im.src = c.stream; }
+        });
+      }).catch(() => {});
+      // release the MJPEG sockets + weight listener however the modal closes
+      // (detached streaming <img>s hold their sockets — clear by reference)
+      const watch = setInterval(() => {
+        const m = document.getElementById('modal');
+        if (!m || !m.classList.contains('is-on') || !document.getElementById('ewLive')) {
+          clearInterval(watch);
+          window.removeEventListener('wc:weight', onW);
+          camImgs.forEach((im) => { im.onerror = null; im.removeAttribute('src'); });
+        }
+      }, 400);
+      const useLive = (el) => {
+        if (!liveW) { U.toast('warn', 'No weight on the bridge', 'The indicator reads 0 kg — position the vehicle on the scale.'); return; }
+        el.value = String(liveW);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      const bt = document.getElementById('ewUseT'), bg = document.getElementById('ewUseG');
+      if (bt) bt.addEventListener('click', () => useLive($t));
+      if (bg) bg.addEventListener('click', () => useLive($g));
+    }
+
+    $s.addEventListener('click', () => {
+      const nt = val($t), ng = val($g), reason = $w.value.trim();
+      const wantCap = !!(U.$('#ewCap') && U.$('#ewCap').checked);
+      const changes = [];
+      if (ng != null && ng !== curG) changes.push({ field: 'GrossWeight', value: ng });
+      if (nt != null && nt !== curT) changes.push({ field: 'TareWeight', value: nt });
+      if (!changes.length || reason.length < 5) return;
+      if (!(window.weighcore && window.weighcore.data && window.weighcore.data.editTicket)) {
+        U.toast('danger', 'Not available', 'Weight editing needs the desktop build with the edit backend.'); return;
+      }
+      $s.disabled = true; $s.textContent = 'Saving…';
+      const scale = window.__TERMINAL_SCALE ||
+        (((window.weighcore.siteInfo && window.weighcore.siteInfo()) || {}).scaleId) || '';
+      const who = ((window.AUTH || {}).user || {}).username || 'operator';
+      window.weighcore.data.editTicket({
+        rid: t.rid, ticketNo: t.ticketNo, scaleId: scale, reason, userName: who, changes
+      }).then((r) => {
+        if (!(r && r.ok)) {
+          U.toast('danger', 'Edit failed', ((r && r.error) || 'unknown error') + ' — nothing was changed.');
+          $s.disabled = false; $s.innerHTML = icon('save') + 'Save correction'; return;
+        }
+        // reflect the committed correction in the on-screen model
+        const parts = [];
+        changes.forEach((c) => {
+          if (c.field === 'GrossWeight') {
+            parts.push('gross ' + num(curG) + ' → ' + num(c.value));
+            t.gross = c.value;
+            const p = t.passes.filter((p2) => p2.kind === 'Gross').pop(); if (p) p.weight = c.value;
+          } else {
+            parts.push('tare ' + num(curT) + ' → ' + num(c.value));
+            t.tare = c.value;
+            const p = t.passes.filter((p2) => p2.kind === 'Tare').pop(); if (p) p.weight = c.value;
+          }
+        });
+        t.net = (t.gross != null && t.tare != null) ? t.gross - t.tare : t.net;
+        DB.audit.unshift({
+          id: 'AUX' + Date.now(), table: 'Transaction', op: 'UPDATE', at: new Date(), user: who,
+          text: 'Ticket ' + t.ticketNo + ' weights corrected — ' + parts.join(', ') + ' · ' + reason, ref: t.id
+        });
+        U.closeModal();
+        U.toast('ok', 'Weights corrected', 'Ticket #' + t.ticketNo + ' — ' + parts.join(', ') + ' · audit row written.');
+        const reopen = () => {
+          V.transactions.openTicket(t.id);
+          if (location.hash.startsWith('#/transactions')) V.transactions.paint();
+        };
+        // photographic evidence of the correction: both cameras fire and the
+        // frames file under this ticket's rid (disk + local store + SQL), so
+        // they show in the gallery, on the slip and in the ERP like pass shots
+        if (wantCap && window.weighcore.captureForTxn) {
+          const seqNext = (t.passes || []).reduce((m, p) => Math.max(m, num(p.seq) || 0), 0) + 1;
+          U.toast('info', 'Capturing evidence…', 'Both cameras are firing for ticket #' + t.ticketNo + '.');
+          window.weighcore.captureForTxn({ rid: t.rid, ticketNo: t.ticketNo, seq: seqNext, kind: 'Edit' })
+            .then((cr) => {
+              const n = ((cr && cr.results) || []).filter((x) => x.ok).length;
+              if (n) U.toast('ok', 'Evidence captured', n + ' camera frame' + (n === 1 ? '' : 's') + ' attached to ticket #' + t.ticketNo + '.');
+              else U.toast('warn', 'No camera frames', 'The cameras returned nothing — the weight correction itself is saved.');
+              reopen();
+            })
+            .catch(() => { U.toast('warn', 'Photo capture failed', 'The weight correction itself is saved.'); reopen(); });
+        } else reopen();
+      }).catch((e) => {
+        U.toast('danger', 'Edit failed', String((e && e.message) || e) + ' — nothing was changed.');
+        $s.disabled = false; $s.innerHTML = icon('save') + 'Save correction';
+      });
     });
   }
 
@@ -1191,11 +1602,13 @@
 
           U.card({
             title: 'Photographic evidence', sub: shots.length + ' frames captured automatically at each pass',
-            body: shots.length
+            // Filled in below from disk for saved tickets — the SQL snapshot
+            // carries no image bytes, so `shots` is empty on anything recalled.
+            body: '<div id="txnShots">' + (shots.length
               ? '<div class="gallery">' + shots.map(s =>
                   '<figure class="shot" data-zoom="' + s.src + '"><img src="' + s.src + '" alt="' + esc(s.cap) + '" loading="lazy">' +
                   '<figcaption class="shot__cap"><span>' + esc(s.cap) + '</span><span>' + esc(s.ts) + '</span></figcaption></figure>').join('') + '</div>'
-              : '<div class="tiny dim" style="padding:var(--sp-4)">No camera frames stored on this ticket.</div>'
+              : '<div class="tiny dim" style="padding:var(--sp-4)">No camera frames stored on this ticket.</div>') + '</div>'
           }) +
 
           U.card({
@@ -1213,12 +1626,34 @@
           '<button class="btn" id="dCopy">' + icon('qr') + 'Verify QR</button>' +
           '<div class="spacer"></div>' +
           (t.deleted ? '' :
+            (window.AUTH.canDelete() && t.rid && t.tare != null && t.gross != null
+              ? '<button class="btn" id="dEdit">' + icon('edit') + 'Edit weights</button>' : '') +
             (t.status !== 'Void' ? '<button class="btn btn--danger" id="dVoid">' + icon('ban') + 'Void ticket</button>' : '') +
             (window.AUTH.canDelete() ? '<button class="btn btn--danger" id="dDel">' + icon('trash') + 'Delete ticket</button>' : '')) +
           (t.deleted && window.AUTH.canDelete() ? '<button class="btn" id="dRestore">' + icon('refresh') + 'Restore ticket</button>' : '') +
         '</footer>');
 
       const dr = U.$('#drawer');
+      // Pull this ticket's stored frames off disk and drop them into the
+      // gallery. Purely additive: if it fails or finds nothing, the drawer
+      // keeps whatever it already rendered.
+      if (window.WeighCoreNative && t.rid && window.weighcore && window.weighcore.imagesForTxn) {
+        window.weighcore.imagesForTxn(t.rid).then(res => {
+          const box = document.getElementById('txnShots');
+          if (!box || !res || !res.images || !res.images.length) return;
+          const byPass = {};
+          t.passes.forEach(p => { byPass[p.seq] = p.kind; });
+          box.innerHTML = '<div class="gallery">' + res.images.map(im => {
+            const cap = (byPass[im.seq] || 'Pass') + ' · pass ' + im.seq;
+            return '<figure class="shot" data-zoom="' + im.dataUrl + '">' +
+              '<img src="' + im.dataUrl + '" alt="' + esc(cap) + '" loading="lazy">' +
+              '<figcaption class="shot__cap"><span>' + esc(cap) + '</span>' +
+              '<span>' + esc(im.cameraId || '') + '</span></figcaption></figure>';
+          }).join('') + '</div>';
+          const sub = box.closest('.card') && box.closest('.card').querySelector('.card__sub');
+          if (sub) sub.textContent = res.images.length + ' frames captured automatically at each pass';
+        }).catch(() => {});
+      }
       // Assign, don't addEventListener: the drawer element is reused for every
       // ticket, so listeners would stack up and each action would fire once per
       // drawer ever opened.
@@ -1232,6 +1667,7 @@
         }
         if (e.target.closest('#dSlip')) { V.transactions.slip(t); return; }
         if (e.target.closest('#dCopy')) { U.toast('ok', 'QR payload copied', qrPayload(t).slice(0, 52) + '…'); return; }
+        if (e.target.closest('#dEdit')) { editWeightsFlow(t); return; }
         if (e.target.closest('#dDel')) { deleteFlow(t); return; }
         if (e.target.closest('#dRestore')) {
           const i = DB.deleted.indexOf(t);
@@ -1280,7 +1716,11 @@
     },
 
     /* ---- printable slip — matches the legacy WEIGHMAST printout ---- */
-    slip(t) {
+    /* One slip body per letterhead: identical in every way except the company
+       name on line 1. opts.images (rows from imagesForTxn) embeds the stored
+       frames as data URLs so an exported PDF is fully self-contained. */
+    slipHtml(t, companyName, opts) {
+      opts = opts || {};
       const v = DB.map.vehicle[t.vehicleId] || {};
       const opUser = (DB.map.user[t.operatorId] || {}).username || (((window.AUTH || {}).user) || {}).username || 'admin';
       const fT12 = (d) => d ? (fDate(d) + ' ' + fTime(d)) : '—';
@@ -1288,21 +1728,36 @@
       const row = (k, val, strong) => '<div class="lslip__r"><dt>' + esc(k) + '</dt><dd>:&nbsp;' +
         (strong ? '<b>' : '') + esc(val) + (strong ? '</b>' : '') + '</dd></div>';
 
-      const shots = [];
-      (t.passes || []).forEach(p => (p.images || []).forEach((src, i) =>
-        shots.push({ src, cap: 'camera ' + (i + 1) + ' Weighment: #' + p.seq })));
+      const slipCfg = (window.weighcore && window.weighcore.slipConfig && window.weighcore.slipConfig()) || null;
+      const coLine = (/^m\/s/i.test(String(companyName)) ? '' : 'M/s. ') + companyName;
+      // per-letterhead Party Name (config slip.partyOverrides) — e.g. the AQUA
+      // WORLD copy prints "Aqua world export" instead of the ticket's cf2
+      const partyOverride = (slipCfg && slipCfg.partyOverrides && slipCfg.partyOverrides[companyName]) || null;
+      const project = (slipCfg && slipCfg.project) || DB.company.project;
+      // header line 3 follows THIS terminal's weighbridge (P5WB2 -> 'WB - 02');
+      // the old custom-field text remains only when no scale id is known
+      const scale = window.__TERMINAL_SCALE ||
+        (((window.weighcore && window.weighcore.siteInfo && window.weighcore.siteInfo()) || {}).scaleId) || '';
+      const wbNum = (String(scale).match(/(\d+)$/) || [])[1];
+      const line3 = wbNum ? ('PACKAGE - 5 ; WB - 0' + wbNum)
+        : (((t.cf && t.cf.cf4) || siteCode(t.siteId)) + ' ; WB - ' + ((t.cf && t.cf.cf5) || wbName(t.wbId)));
 
-      U.openModal(
-        '<div class="modal__head"><div><div class="card__title">Weighment slip</div>' +
-        '<div class="card__sub">Ticket #' + t.ticketNo + ' · ' + fDT(t.at) + '</div></div><div class="spacer"></div>' +
-        '<button class="btn btn--sm" onclick="window.print()">' + icon('printer') + 'Print</button>' +
-        '<button class="iconbtn" data-close>' + icon('x') + '</button></div>' +
-        '<div class="modal__body">' +
-        '<div class="lslip">' +
+      const shots = [];
+      if (opts.images && opts.images.length) {
+        opts.images.forEach((im) => {
+          const n = (String(im.cameraId || '').match(/\d+$/) || [im.cameraId || '?'])[0];
+          shots.push({ src: im.dataUrl, cap: 'camera ' + n + ' Weighment: #' + im.seq });
+        });
+      } else {
+        (t.passes || []).forEach(p => (p.images || []).forEach((src, i) =>
+          shots.push({ src, cap: 'camera ' + (i + 1) + ' Weighment: #' + p.seq })));
+      }
+
+      return '<div class="lslip">' +
           '<div class="lslip__head">' +
-            '<h3>' + esc(DB.company.name) + '.</h3>' +
-            '<p>' + esc(DB.company.project) + '.</p>' +
-            '<p>' + esc(((t.cf && t.cf.cf4) || siteCode(t.siteId)) + ' ; WB - ' + ((t.cf && t.cf.cf5) || wbName(t.wbId))) + '.</p>' +
+            '<h3>' + esc(coLine) + '.</h3>' +
+            '<p>' + esc(project) + '.</p>' +
+            '<p>' + esc(line3) + '.</p>' +
           '</div>' +
           '<div class="lslip__pt">Print Time :&nbsp;&nbsp;' + esc(fT12(new Date())) + '</div>' +
           '<div class="lslip__cols">' +
@@ -1314,7 +1769,7 @@
               row('Gate', gName(t.gateId)) +
             '</div><div>' +
               row('Vehicle Type', t.cf.cf1 || v.type || '—') +
-              row('Party Name', t.cf.cf2 || '—') +
+              row('Party Name', partyOverride || t.cf.cf2 || '—') +
               row('Buyer Name', t.cf.cf3 || '—') +
               row('Package No', t.cf.cf4 || '—') +
               row('WeighBridge No', t.cf.cf5 || '—') +
@@ -1331,19 +1786,73 @@
               row('Tare Time', t.tareAt ? fT12(t.tareAt) : '—') +
             '</div>' +
           '</div>' +
-          (shots.length
+          // Filled in below from disk for saved tickets — a recalled ticket
+          // carries no in-memory pass images, so `shots` is empty there.
+          '<div id="slipShots">' + (shots.length
             ? '<div class="lslip__shots">' + shots.map(s =>
                 '<figure class="lslip__shot"><img src="' + s.src + '" alt="' + esc(s.cap) + '">' +
                 '<figcaption>' + esc(s.cap) + '</figcaption></figure>').join('') + '</div>'
-            : '') +
+            : '') + '</div>' +
           (t.manual ? '<p style="margin:8px 0"><b>&#10033; MANUAL ENTRY</b> — one or more weights were keyed by the operator, not read from the indicator.</p>' : '') +
           '<div class="lslip__foot">' +
             '<div>User Name :&nbsp;&nbsp;' + esc(opUser) + '</div>' +
             '<div class="lslip__sig"><div class="line"></div>Operator Sign.</div>' +
           '</div>' +
-        '</div></div>' +
+        '</div>';
+    },
+
+    slip(t) {
+      const slipCfg = (window.weighcore && window.weighcore.slipConfig && window.weighcore.slipConfig()) || null;
+      const companies = (slipCfg && slipCfg.companies && slipCfg.companies.length) ? slipCfg.companies : [DB.company.name];
+      U.openModal(
+        '<div class="modal__head"><div><div class="card__title">Weighment slip</div>' +
+        '<div class="card__sub">Ticket #' + t.ticketNo + ' · ' + fDT(t.at) + '</div></div><div class="spacer"></div>' +
+        '<button class="btn btn--sm" onclick="window.print()">' + icon('printer') + 'Print</button>' +
+        '<button class="iconbtn" data-close>' + icon('x') + '</button></div>' +
+        '<div class="modal__body">' + this.slipHtml(t, companies[0]) + '</div>' +
         '<div class="modal__foot"><button class="btn btn--primary" onclick="window.print()">' + icon('printer') + 'Print slip</button>' +
+        ((window.weighcore && window.weighcore.exportSlipPdf)
+          ? '<button class="btn" id="dPdfBoth">' + icon('download') + 'Download both PDFs</button>' : '') +
         '<button class="btn" data-close>Close</button></div>', true);
+
+      // Same disk read-back as the ticket drawer: the frames live on disk keyed
+      // by rid even when the passes carry no images. Purely additive — if it
+      // fails or finds nothing, the slip keeps whatever it already rendered.
+      if (window.WeighCoreNative && t.rid && window.weighcore && window.weighcore.imagesForTxn) {
+        window.weighcore.imagesForTxn(t.rid).then(res => {
+          const box = document.getElementById('slipShots');
+          if (!box || !res || !res.images || !res.images.length) return;
+          box.innerHTML = '<div class="lslip__shots">' + res.images.map(im => {
+            const n = (String(im.cameraId || '').match(/\d+$/) || [im.cameraId || '?'])[0];
+            const cap = 'camera ' + n + ' Weighment: #' + im.seq;
+            return '<figure class="lslip__shot"><img src="' + im.dataUrl + '" alt="' + esc(cap) + '">' +
+              '<figcaption>' + esc(cap) + '</figcaption></figure>';
+          }).join('') + '</div>';
+        }).catch(() => {});
+      }
+
+      // "Download both PDFs" — one identical slip per configured letterhead,
+      // photos embedded as data URLs so the files are fully self-contained
+      const pdfBtn = U.$('#dPdfBoth');
+      if (pdfBtn) pdfBtn.addEventListener('click', () => {
+        pdfBtn.disabled = true; pdfBtn.textContent = 'Generating…';
+        const finish = () => { pdfBtn.disabled = false; pdfBtn.innerHTML = icon('download') + 'Download both PDFs'; };
+        const buildAndSend = (images) => {
+          const files = companies.map((c) => ({ company: c, html: this.slipHtml(t, c, { images }) }));
+          window.weighcore.exportSlipPdf({ ticketNo: t.ticketNo, files }).then((r) => {
+            if (r && r.ok) {
+              U.toast('ok', 'PDFs saved', (r.files || []).length + ' file' + ((r.files || []).length === 1 ? '' : 's') + ' in ' + (r.dir || 'the slips folder'));
+              if (r.dir && window.weighcore.openPath) window.weighcore.openPath(r.dir);
+            } else U.toast('danger', 'PDF export failed', (r && r.error) || 'unknown error');
+            finish();
+          }).catch((e) => { U.toast('danger', 'PDF export failed', String((e && e.message) || e)); finish(); });
+        };
+        if (t.rid && window.weighcore.imagesForTxn) {
+          window.weighcore.imagesForTxn(t.rid)
+            .then((res) => buildAndSend(res && res.images && res.images.length ? res.images : null))
+            .catch(() => buildAndSend(null));
+        } else buildAndSend(null);
+      });
     }
   };
 

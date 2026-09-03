@@ -1,8 +1,8 @@
 {
   "name": "weighcore-desktop",
   "productName": "WeighCore",
-  "version": "1.0.0",
-  "description": "WeighCore weighbridge operations terminal — Electron desktop app with real serial/LAN weight input, IP-camera capture, offline-first storage and hybrid VPS sync. Zero native modules (no compiler required).",
+  "version": "1.0.5",
+  "description": "WeighCore weighbridge operations terminal â€” Electron desktop app with real serial/LAN weight input, IP-camera capture, offline-first storage and hybrid VPS sync. Zero native modules (no compiler required).",
   "author": "Endel Digital",
   "license": "UNLICENSED",
   "private": true,
@@ -19,12 +19,35 @@
   "build": {
     "appId": "com.endeldigital.weighcore",
     "productName": "WeighCore",
-    "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["main.js", "preload.js", "config.example.json", "src/**/*", "renderer/**/*", "bin/**/*", "keys/wctunnel_key"],
-    "extraResources": [{ "from": "installer", "to": "installer" }],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "config.example.json",
+      "src/**/*",
+      "renderer/**/*",
+      "bin/**/*",
+      "keys/wctunnel_key"
+    ],
+    "extraResources": [
+      {
+        "from": "installer",
+        "to": "installer"
+      }
+    ],
     "asar": false,
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }]
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,

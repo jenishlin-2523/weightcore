@@ -18,12 +18,17 @@ contextBridge.exposeInMainWorld('weighcore', {
   // ---- live SQL data ----
   getSnapshot: () => ipcRenderer.sendSync('data:snapshot-sync'),  // instant: preloaded at startup
   siteInfo: () => { try { return ipcRenderer.sendSync('site:get'); } catch (_) { return null; } },  // { name, code, scaleId }
+  slipConfig: () => { try { return ipcRenderer.sendSync('slip:get'); } catch (_) { return null; } },  // { project, companies[], outDir } or null
+  exportSlipPdf: (payload) => ipcRenderer.invoke('slip:exportPdf', payload),   // dual-letterhead slip PDFs
+  exportReport: (payload) => ipcRenderer.invoke('report:export', payload),     // summary report -> Desktop (pdf/xls)
+  openPath: (p) => ipcRenderer.invoke('shell:openPath', p),                    // reveal a folder in Explorer
   data: {
     refresh:    () => ipcRenderer.invoke('data:refresh'),
     nextTicket: () => ipcRenderer.invoke('data:nextTicket'),
     saveTicket:  (t) => ipcRenderer.invoke('data:saveTicket', t),
     saveVehicle: (v) => ipcRenderer.invoke('data:saveVehicle', v),
-    saveMaster:  (m) => ipcRenderer.invoke('data:saveMaster', m)
+    saveMaster:  (m) => ipcRenderer.invoke('data:saveMaster', m),
+    editTicket:  (payload) => ipcRenderer.invoke('data:editTicket', payload)   // audited weight correction
   },
   auth: {
     login: (username, password) => ipcRenderer.invoke('auth:login', { username, password })
@@ -51,6 +56,7 @@ contextBridge.exposeInMainWorld('weighcore', {
   captureForTxn:  (opts) => ipcRenderer.invoke('camera:captureForTxn', opts || {}),
   probeCameras:   () => ipcRenderer.invoke('camera:probe'),
   listCameras:    () => ipcRenderer.invoke('camera:list'),
+  imagesForTxn:   (rid) => ipcRenderer.invoke('images:forTxn', rid),   // photos of a saved ticket
 
   // ---- local database (offline-first) ----
   db: {

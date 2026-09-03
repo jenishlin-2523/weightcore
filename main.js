@@ -169,6 +169,34 @@ function registerIpc() {
     return { ok: results.some((x) => x.ok), results };
   });
 
+  // Capture photos for one saved ticket, read back from disk on demand.
+  // The SQL snapshot deliberately carries no image bytes (it would balloon), so
+  // a recalled ticket showed an empty gallery even though its JPEGs were on
+  // disk and in the ERP. Keyed by the ticket's rid, which is also the folder
+  // name used when the frames were written.
+  ipcMain.handle('images:forTxn', (_e, rid) => {
+    try {
+      if (!rid || !store) return { ok: true, images: [] };
+      const key = String(rid);
+      const images = [];
+      for (const r of store.list('images', 20000)) {
+        if (String(r.txn_id) !== key) continue;
+        try {
+          if (!r.file || !fs.existsSync(r.file)) continue;
+          const b = fs.readFileSync(r.file);
+          if (!b || !b.length) continue;
+          images.push({
+            id: r.id, cameraId: r.camera_id || '', seq: Number(r.seq) || 0,
+            at: r.created_at || null,
+            dataUrl: 'data:image/jpeg;base64,' + b.toString('base64')
+          });
+        } catch (_) {}
+      }
+      images.sort((a, b) => (a.seq - b.seq) || String(a.cameraId).localeCompare(String(b.cameraId)));
+      return { ok: true, images };
+    } catch (e) { return { ok: false, error: e.message, images: [] }; }
+  });
+
   // db
   ipcMain.handle('db:upsert', (_e, { entity, row }) => { try { return { ok: true, id: store.upsert(entity, row) }; } catch (e) { return { ok: false, error: e.message }; } });
   ipcMain.handle('db:list',   (_e, { entity, limit }) => { try { return { ok: true, rows: store.list(entity, limit) }; } catch (e) { return { ok: false, error: e.message }; } });
@@ -185,6 +213,7 @@ function registerIpc() {
   // live SQL data
   ipcMain.on('data:snapshot-sync', (e) => { e.returnValue = liveSnapshot; });   // instant: already loaded at startup
   ipcMain.on('site:get', (e) => { e.returnValue = (cfg && cfg.site) || null; });  // this terminal's scaleId — scopes the UI to one weighbridge
+  ipcMain.on('slip:get', (e) => { e.returnValue = (cfg && cfg.slip) || null; });  // slip letterheads: { project, companies[], outDir }
   ipcMain.handle('data:refresh', async () => {
     try { liveSnapshot = await sqldb.snapshot(cfg.db); return { ok: true, counts: liveSnapshot._counts }; }
     catch (e) { return { ok: false, error: e.message }; }
@@ -201,6 +230,104 @@ function registerIpc() {
   ipcMain.handle('data:saveMaster', async (_e, m) => {
     try { const r = await sqldb.saveMaster(cfg.db, m); logLine('saveMaster ' + (m && m.entity) + '#' + ((m && m.id) || 'new') + ' ok=' + r.ok + (r.error ? ' ' + r.error : '')); return r; }
     catch (e) { logLine('saveMaster FAILED: ' + e.message); return { ok: false, error: e.message }; }
+  });
+  // audited weight correction on a saved ticket (writes TransactionAudit)
+  ipcMain.handle('data:editTicket', async (_e, payload) => {
+    try {
+      const r = await sqldb.editWeights(cfg.db, payload);
+      logLine('editTicket #' + ((payload && payload.ticketNo) || '?') + ' ok=' + r.ok + (r.error ? ' ' + r.error : ''));
+      return r;
+    } catch (e) { logLine('editTicket FAILED: ' + e.message); return { ok: false, error: e.message }; }
+  });
+
+  // Dual-letterhead slip PDFs: each entry renders in a throwaway offscreen
+  // window and prints to A4. Fully fenced — a PDF failure can never touch
+  // weighing. The document goes through a temp FILE (not a data: URL) because
+  // Chromium caps URL length ~2MB and the slips embed base64 photographs.
+  ipcMain.handle('slip:exportPdf', async (_e, payload) => {
+    try {
+      const ticketNo = String((payload && payload.ticketNo) || 'ticket').replace(/[^\w-]/g, '') || 'ticket';
+      const entries = ((payload && payload.files) || []).filter((f) => f && f.html);
+      if (!entries.length) return { ok: false, error: 'nothing to export', files: [] };
+      let css = '';
+      try { css = fs.readFileSync(path.join(__dirname, 'renderer', 'assets', 'css', 'weighmast-theme.css'), 'utf8'); } catch (_) {}
+      const baseDir = (cfg.slip && cfg.slip.outDir) ? cfg.slip.outDir : path.join(app.getPath('userData'), 'slips');
+      const dir = path.join(baseDir, ticketNo);
+      fs.mkdirSync(dir, { recursive: true });
+      const outFiles = [];
+      for (let i = 0; i < entries.length; i++) {
+        const f = entries[i];
+        const slug = String(f.company || 'company').toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || ('COPY-' + (i + 1));
+        const full = '<!doctype html><html><head><meta charset="utf-8"><style>' +
+          css +
+          // AFTER the theme so they win: plain white page, no card chrome
+          'body{margin:0;background:#fff}.lslip{border:0;border-radius:0}' +
+          '</style></head><body>' + f.html + '</body></html>';
+        const tmp = path.join(app.getPath('temp'), 'wc-slip-' + process.pid + '-' + Date.now() + '-' + i + '.html');
+        const win = new BrowserWindow({ show: false, webPreferences: { offscreen: true, sandbox: true } });
+        try {
+          fs.writeFileSync(tmp, full, 'utf8');
+          await win.loadFile(tmp);
+          const buf = await win.webContents.printToPDF({
+            pageSize: 'A4', printBackground: true,
+            margins: { marginType: 'custom', top: 0.5, bottom: 0.5, left: 0.5, right: 0.5 }
+          });
+          const out = path.join(dir, 'Ticket-' + ticketNo + '-' + slug + '.pdf');
+          fs.writeFileSync(out, buf);
+          outFiles.push(out);
+        } finally {
+          try { win.destroy(); } catch (_) {}
+          try { fs.unlinkSync(tmp); } catch (_) {}
+        }
+      }
+      logLine('slip pdf x' + outFiles.length + ' ticket #' + ticketNo + ' -> ' + dir);
+      return { ok: true, files: outFiles, dir };
+    } catch (e) { logLine('slip pdf FAILED: ' + e.message); return { ok: false, error: e.message, files: [] }; }
+  });
+  // open a folder in Explorer (used after the PDF export)
+  ipcMain.handle('shell:openPath', async (_e, p) => {
+    try { return await require('electron').shell.openPath(String(p || '')); } catch (e) { return e.message; }
+  });
+
+  // Legacy-format report exports to Desktop\WeighCore Reports: PDF via the
+  // same offscreen print pipeline as the slips (A4 landscape — the summary
+  // is ten columns wide) and Excel as an HTML .xls that Excel opens natively.
+  ipcMain.handle('report:export', async (_e, p) => {
+    try {
+      const kind = (p && p.kind) === 'xls' ? 'xls' : 'pdf';
+      const name = String((p && p.name) || 'report').replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'report';
+      const html = String((p && p.html) || '');
+      if (!html) return { ok: false, error: 'nothing to export' };
+      let css = '';
+      try { css = fs.readFileSync(path.join(__dirname, 'renderer', 'assets', 'css', 'weighmast-theme.css'), 'utf8'); } catch (_) {}
+      const full = '<!doctype html><html><head><meta charset="utf-8"><style>' + css +
+        'body{margin:0;background:#fff}</style></head><body>' + html + '</body></html>';
+      const dir = path.join(app.getPath('desktop'), 'WeighCore Reports');
+      fs.mkdirSync(dir, { recursive: true });
+      if (kind === 'xls') {
+        const file = path.join(dir, name + '.xls');
+        fs.writeFileSync(file, '﻿' + full, 'utf8');
+        logLine('report xls -> ' + file);
+        return { ok: true, file, dir };
+      }
+      const tmp = path.join(app.getPath('temp'), 'wc-report-' + process.pid + '-' + Date.now() + '.html');
+      const win = new BrowserWindow({ show: false, webPreferences: { offscreen: true, sandbox: true } });
+      try {
+        fs.writeFileSync(tmp, full, 'utf8');
+        await win.loadFile(tmp);
+        const buf = await win.webContents.printToPDF({
+          pageSize: 'A4', landscape: true, printBackground: true,
+          margins: { marginType: 'custom', top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 }
+        });
+        const file = path.join(dir, name + '.pdf');
+        fs.writeFileSync(file, buf);
+        logLine('report pdf -> ' + file);
+        return { ok: true, file, dir };
+      } finally {
+        try { win.destroy(); } catch (_) {}
+        try { fs.unlinkSync(tmp); } catch (_) {}
+      }
+    } catch (e) { logLine('report export FAILED: ' + e.message); return { ok: false, error: e.message }; }
   });
 
   // authentication (verify against the live UserMaster)

@@ -263,10 +263,36 @@
     mode: 'Double', weighType: 'Gross', txnType: 'Processing', direction: 'Plant to Yard',
     vehicleId: '', transporterId: '', productId: '', gateId: '', driverId: '',
     cf: { cf1: '', cf2: '', cf3: '', cf4: '', cf5: wbNumber(), cf6: '' },
-    passes: [], capture: 'auto', manualWeight: '', tab: 'receipt',
+    passes: [], tab: 'receipt',
     recallOf: null, rid: '', live: 0, target: 0, stable: false, ticketNo: null
   };
   let timer = null, camTimer = null, camIdx = 0, settleAt = 0, weightSub = null, edgeSub = null;
+
+  /* ----------------------------------------------------------------------
+     In-flight guards — duplicate ticket protection.
+
+     Continue/F7 starts an async SQL save that can take a second or more.
+     Until it resolved, TS still looked complete and the button stayed
+     enabled, so a second click — or OS key auto-repeat while F7 was held —
+     ran the whole save again and wrote the ticket (or the pass) a second
+     time. Observed live: one ticket carrying FOUR copies of the same pass.
+
+     These are set SYNCHRONOUSLY the instant an action starts and cleared only
+     when it settles (success or failure), so extra presses inside the window
+     are ignored outright — never queued, never replayed. The flag is the
+     authority; the disabled attribute is only its visible echo, because
+     repaint() rebuilds the buttons from scratch.
+
+     Module scope, alongside TS, because the terminal's render helpers
+     (receiptHtml and friends) read them as well as mount()'s handlers.
+     mount() resets all three, so a stale flag can never survive a remount and
+     lock the terminal out of saving.
+     ---------------------------------------------------------------------- */
+  let savingTicket = false, capturingPass = false;
+  // set to a ticket id when the operator explicitly chose "start a new ticket
+  // anyway" past the open-ticket gate; cleared on every finish and whenever the
+  // vehicle changes, so the gate re-arms for the next truck.
+  let gateOverride = null;
 
   /* live link to the weight indicator — captures are blocked while it is down */
   const EDGE = { connected: false };
@@ -281,7 +307,7 @@
       mode: 'Double', weighType: 'Gross', txnType: 'Processing', direction: 'Plant to Yard',
       vehicleId: '', transporterId: '', productId: '', gateId: '', driverId: '',
       cf: { cf1: '', cf2: '', cf3: '', cf4: '', cf5: wbNumber(), cf6: '' },
-      passes: [], capture: 'auto', manualWeight: '', recallOf: null, rid: genRid(), stable: false,
+      passes: [], recallOf: null, rid: genRid(), stable: false,
       ticketNo: Math.max.apply(null, DB.transactions.map(t => t.ticketNo)) + 1
     });
   }
@@ -294,8 +320,40 @@
 
   const locked = () => DB.settings.lockFieldsAfterPass1 && TS.passes.length > 0;
 
-  function tareOf() { const p = TS.passes.filter(p => p.kind === 'Tare').pop(); return p ? p.weight : null; }
-  function grossOf() { const p = TS.passes.filter(p => p.kind === 'Gross').pop(); return p ? p.weight : null; }
+  /* ----------------------------------------------------------------------
+     Two-pass normalisation. A loaded truck can never weigh less than an empty
+     one, so on a normal Double ticket the HEAVIER of the two readings is
+     always the gross and the lighter one always the tare — whichever button
+     ("Tare" or "Gross") the operator happened to press for each pass.
+
+     Real traffic reverses the order (an Incoming truck arrives loaded and
+     leaves empty), and when the labelling came out backwards the stored pair
+     was swapped, which is what produced negative net weights.
+
+     Only these DERIVED figures are normalised. The pass log itself — sequence,
+     weight, time, and the button the operator actually pressed — is kept
+     exactly as captured, because that is the audit record.
+
+     Scoped deliberately to Double mode with exactly two passes: Single mode
+     falls back to the vehicle's stored tare, and Multi (3+) has no meaningful
+     "the two readings" to order.
+     ---------------------------------------------------------------------- */
+  const seqOf = (p) => Number(p && p.seq) || (TS.passes.indexOf(p) + 1);
+  function normPair() {
+    if (TS.mode !== 'Double' || TS.passes.length !== 2) return null;
+    const a = TS.passes[0], b = TS.passes[1];
+    if (a == null || b == null || a.weight == null || b.weight == null) return null;
+    const hi = (a.weight >= b.weight) ? a : b, lo = (hi === a) ? b : a;
+    return { grossPass: hi, tarePass: lo, gross: hi.weight, tare: lo.weight };
+  }
+  function tareOf() {
+    const np = normPair(); if (np) return np.tare;
+    const p = TS.passes.filter(p => p.kind === 'Tare').pop(); return p ? p.weight : null;
+  }
+  function grossOf() {
+    const np = normPair(); if (np) return np.gross;
+    const p = TS.passes.filter(p => p.kind === 'Gross').pop(); return p ? p.weight : null;
+  }
   function netOf() {
     let t = tareOf(), g = grossOf();
     if (TS.mode === 'Single' && t == null && TS.vehicleId) { const v = DB.map.vehicle[TS.vehicleId]; if (v && v.tare) t = v.tare; }
@@ -414,6 +472,50 @@
 
   /* the Receipt Details pane, extracted so field picks can refresh it in
      place without re-rendering (and re-focusing) the whole terminal */
+  /* ----------------------------------------------------------------------
+     Open-ticket guard.
+
+     A Double weighment is two passes on ONE ticket. If the operator starts a
+     fresh ticket for a vehicle that already has an Active one, the closing
+     pass lands on the wrong record and the pair is broken — a tare from one
+     visit ends up matched to a gross from another, which is one of the ways a
+     negative net weight is produced.
+
+     Status values are taken from the live schema, not assumed:
+     TransactionData.Status is nvarchar(50) holding exactly 'Active',
+     'Complete' or 'Void', and sqldb.js normStatus() maps those onto t.status
+     unchanged. "Open" therefore means Active — never Complete, never Void.
+
+     This reads DB.transactions only — the snapshot of THIS terminal's own
+     local database — so no network call is added to the weighing path.
+     ---------------------------------------------------------------------- */
+  function openTicketFor(vehicleId, exceptTicketId) {
+    if (!vehicleId) return null;
+    // DB.transactions is newest-first, so find() returns the most recent one
+    return DB.transactions.find(t => t.vehicleId === vehicleId &&
+      t.status === 'Active' && (t.passes || []).length && !t.deleted &&
+      t.id !== exceptTicketId) || null;
+  }
+  /* which pass that open ticket already holds, and which one it is still owed */
+  function openTicketNeed(t) {
+    const last = (t.passes || [])[t.passes.length - 1] || {};
+    const done = last.kind === 'Tare' ? 'Tare' : 'Gross';
+    return { done, need: done === 'Tare' ? 'Gross' : 'Tare', at: last.at || t.at, ticketNo: t.ticketNo };
+  }
+  /* inline hint rendered directly under the Vehicle field the moment a vehicle
+     with an open ticket is chosen — the operator sees it before typing anything else */
+  function openTicketHintHtml() {
+    if (TS.recallOf) return '';                    // already working on that very ticket
+    const t = openTicketFor(TS.vehicleId);
+    if (!t) return '';
+    const n = openTicketNeed(t);
+    return '<div style="margin-top:var(--sp-2)">' + U.callout('warn',
+      '<b>Open ticket #' + n.ticketNo + ' — ' + n.done.toUpperCase() + ' captured' +
+      (n.at ? ' at ' + esc(fDT(n.at)) : '') + '.</b><br>' +
+      'The next weighing for this vehicle must be <b>' + n.need.toUpperCase() +
+      '</b>, on that same ticket. Recall #' + n.ticketNo + ' instead of starting a new ticket.') + '</div>';
+  }
+
   function receiptHtml() {
     const veh = DB.map.vehicle[TS.vehicleId];
     const t = tareOf(), g = grossOf(), n = netOf();
@@ -468,6 +570,7 @@
             '<button class="btn" id="btnAddVeh" title="Quick-add vehicle"' + (lock ? ' disabled' : '') + '>' + icon('plus') + '</button></div>' +
           (veh ? '<div class="field__hint">' + (veh.tare ? 'Stored tare <b>' + num(veh.tare) + ' kg</b>' : '<span style="color:var(--danger)">No stored tare on file</span>') +
             (veh.type ? ' · ' + esc(veh.type) : '') + ' · ' + esc(aName(veh.accountId)) + '</div>' : '') +
+          openTicketHintHtml() +
         '</div>';
 
       // Masters down the left column, configurable fields down the right —
@@ -513,7 +616,7 @@
             '</div>'
         }) +
         '<div class="row">' +
-          '<button class="btn btn--primary btn--lg" id="btnContinue"' + (requiredOk() ? '' : ' disabled') + '>' +
+          '<button class="btn btn--primary btn--lg" id="btnContinue"' + (requiredOk() && !savingTicket ? '' : ' disabled') + '>' +
             icon('check') + 'Continue<kbd>F7</kbd></button>' +
           '<button class="btn btn--lg" id="btnCancel">Cancel<kbd>Esc</kbd></button>' +
         '</div>' +
@@ -575,12 +678,11 @@
             '</div>' +
             '<div class="termhw__ind">' +
               weightZone +
+              // manual entry removed by client request: weight comes ONLY from
+              // the indicator, so the Automatic/Manual toggle and the keyed-in
+              // weight box are gone — one capture button, indicator-fed
               '<div class="capbar">' +
-                U.seg('capture', [{ v: 'auto', t: 'Automatic' }, { v: 'manual', t: 'Manual' }], TS.capture) +
-                (TS.capture === 'manual'
-                  ? '<input class="input" id="manualW" style="width:104px" placeholder="0" value="' + esc(TS.manualWeight) + '" inputmode="numeric">'
-                  : '') +
-                '<button class="btn btn--capture" id="btnCapture"' + (offline && TS.capture !== 'manual' ? ' disabled' : '') + '>' +
+                '<button class="btn btn--capture" id="btnCapture"' + (offline ? ' disabled' : '') + '>' +
                   icon('download') + 'Capture Weight <kbd>F8</kbd></button>' +
               '</div>' +
             '</div>' +
@@ -610,6 +712,13 @@
       const self = this;
       const term = U.$('#term', root);
       const NATIVE = !!(window.WeighCoreNative && window.weighcore && window.weighcore.capture);
+
+      // a remount must never inherit a stuck guard from the previous mount
+      savingTicket = false; capturingPass = false; gateOverride = null;
+      const syncBtns = () => {
+        const c = U.$('#btnContinue', term); if (c) c.disabled = savingTicket || !requiredOk();
+        const p = U.$('#btnCapture', term); if (p && capturingPass) p.disabled = true;
+      };
 
       // Real indicator weight (desktop app) drives the LED, replacing the demo simulation.
       if (NATIVE) {
@@ -710,9 +819,10 @@
       /* searchable master combos — every Transaction Details field */
       function refreshReceipt() {
         const box = U.$('#rcpBox', term); if (box) box.innerHTML = receiptHtml();
-        const btn = U.$('#btnContinue', term); if (btn) btn.disabled = !requiredOk();
+        syncBtns();
       }
       function pickVehicle(vid) {
+        gateOverride = null;                            // a new vehicle re-arms the open-ticket gate
         if (!vid) { TS.vehicleId = ''; TS.target = pickTarget(); repaint(); return; }
         const v = DB.map.vehicle[vid]; if (!v) return;
         TS.vehicleId = v.id;
@@ -735,8 +845,16 @@
         TS.target = pickTarget();
         repaint();
         const vi = U.$('#vehicle', term); if (vi) vi.focus();
-        U.toast('info', 'Vehicle loaded', v.no +
-          (lastT ? ' · details fetched from ticket #' + lastT.ticketNo : (v.tare ? ' · stored tare ' + num(v.tare) + ' kg' : ' · no stored tare on file')));
+        // an open ticket outranks the routine "vehicle loaded" note
+        const openNow = TS.recallOf ? null : openTicketFor(v.id);
+        if (openNow) {
+          const n = openTicketNeed(openNow);
+          U.toast('warn', 'Ticket #' + n.ticketNo + ' is still open for ' + v.no,
+            n.done.toUpperCase() + ' already captured — the next weighing must be ' + n.need.toUpperCase() + ' on that same ticket.');
+        } else {
+          U.toast('info', 'Vehicle loaded', v.no +
+            (lastT ? ' · details fetched from ticket #' + lastT.ticketNo : (v.tare ? ' · stored tare ' + num(v.tare) + ' kg' : ' · no stored tare on file')));
+        }
       }
       function comboDefs() {
         const defs = {
@@ -870,8 +988,7 @@
         const s = e.target.closest('[data-seg] .seg__opt');
         if (s) {
           const key = s.closest('[data-seg]').dataset.seg, v = s.dataset.v;
-          if (key === 'capture') TS.capture = v;
-          else if (key === 'mode') TS.mode = v;
+          if (key === 'mode') TS.mode = v;
           else if (key === 'weighType') { TS.weighType = v; TS.target = pickTarget(); }
           else if (key === 'txnType') {
             TS.txnType = v;
@@ -898,12 +1015,9 @@
         }
       });
 
-      // master/list fields update TS through their combo picks; only the
-      // manual-weight box still syncs by raw typing
-      term.addEventListener('input', (e) => {
-        if (e.target.id === 'manualW') TS.manualWeight = e.target.value;
-        const btn = U.$('#btnContinue', term); if (btn) btn.disabled = !requiredOk();
-      });
+      // master/list fields update TS through their combo picks; typing only
+      // needs to keep the Continue button's enabled state honest
+      term.addEventListener('input', () => { syncBtns(); });
 
       /* recall — type-ahead over the open tickets (ticket / vehicle / product) */
       function recallTicket(t) {
@@ -918,6 +1032,44 @@
         TS.target = pickTarget();
         repaint();
         U.toast('info', 'Ticket #' + t.ticketNo + ' recalled', 'Fields locked — capture the closing weight.');
+      }
+
+      /* The hard gate. Shown when Continue would create a second ticket for a
+         vehicle that already has an open one. The primary action recalls the
+         real ticket so the operator lands on the right record with no searching;
+         the escape hatch stays available for a genuinely stuck old ticket, but
+         is deliberately secondary. */
+      function openTicketGate(open) {
+        const n = openTicketNeed(open);
+        const vno = vName(open.vehicleId);
+        U.openModal(
+          '<div class="modal__head"><div><div class="card__title">' + esc(vno) + ' already has an open ticket</div>' +
+          '<div class="card__sub">Ticket #' + open.ticketNo + ' · ' + esc(pName(open.productId)) + '</div></div>' +
+          '<div class="spacer"></div><button class="iconbtn" data-close>' + icon('x') + '</button></div>' +
+          '<div class="modal__body">' +
+          U.callout('warn',
+            '<b>Vehicle ' + esc(vno) + ' already has an OPEN ticket #' + open.ticketNo + ' — ' +
+            n.done.toUpperCase() + ' was captured' + (n.at ? ' at ' + esc(fDT(n.at)) : '') + '.</b><br>' +
+            'The next weighing for this vehicle must be <b>' + n.need.toUpperCase() +
+            '</b>, on that same ticket, not a new ' + n.done.toLowerCase() + '.') +
+          '<div style="height:var(--sp-4)"></div>' +
+          '<div class="tiny dim">Starting a second ticket splits one truck visit across two records: the ' +
+          n.need.toLowerCase() + ' gets paired with the wrong ' + n.done.toLowerCase() +
+          ', which is how broken pairings and negative net weights appear.</div>' +
+          '</div>' +
+          '<div class="modal__foot">' +
+            '<button class="btn btn--primary btn--lg" id="otOpen">' + icon('check') + 'Open ticket #' + open.ticketNo + '</button>' +
+            '<div class="spacer"></div>' +
+            '<button class="btn btn--sm" id="otAnyway">Start a new ticket anyway</button>' +
+            '<button class="btn btn--sm" data-close>Cancel</button>' +
+          '</div>');
+        U.$('#otOpen').addEventListener('click', () => { U.closeModal(); recallTicket(open); });
+        U.$('#otAnyway').addEventListener('click', () => {
+          U.closeModal();
+          gateOverride = open.id;                 // this one vehicle, this one time
+          U.toast('warn', 'Starting a second ticket', 'Ticket #' + open.ticketNo + ' is still open for ' + vno + '.');
+          complete();
+        });
       }
       const rec = U.$('#recall', root);
       if (rec) {
@@ -967,20 +1119,18 @@
 
       /* actions */
       function capture() {
-        let w = TS.live;
-        if (TS.capture === 'manual') {
-          w = parseInt(String(TS.manualWeight).replace(/[^\d]/g, ''), 10);
-          if (!w) { U.toast('danger', 'Enter a weight', 'Manual mode needs a numeric value.'); return; }
-        } else {
-          if (NATIVE && !EDGE.connected) {
-            U.toast('danger', 'Indicator disconnected', 'No live link to the weight indicator — restore the serial link or switch to Manual.'); return;
-          }
-          if (!w || w <= 0) {
-            U.toast('warn', 'No weight on the bridge', 'The indicator reads 0 kg — position the vehicle on the scale, or use Manual.'); return;
-          }
-          // no stability gate: Capture takes the reading and the images the
-          // moment the button is pressed, exactly like the legacy terminal
+        if (capturingPass) return;              // a capture is already running
+        // manual entry removed by client request — the ONLY weight source is
+        // the live indicator reading; nothing can be keyed in by hand
+        const w = TS.live;
+        if (NATIVE && !EDGE.connected) {
+          U.toast('danger', 'Indicator disconnected', 'No live link to the weight indicator — weighing resumes when the serial link is restored.'); return;
         }
+        if (!w || w <= 0) {
+          U.toast('warn', 'No weight on the bridge', 'The indicator reads 0 kg — position the vehicle on the scale.'); return;
+        }
+        // no stability gate: Capture takes the reading and the images the
+        // moment the button is pressed, exactly like the legacy terminal
         // a fresh Double ticket takes exactly ONE weighment here: store it with
         // Continue, then recall the ticket for the closing weighment — never
         // two captures back-to-back on the same standing truck
@@ -993,10 +1143,12 @@
         const wb = DB.map.wb[DB.settings.connectedScale];
         const _pass = {
           seq: TS.passes.length + 1, kind: TS.weighType, weight: w, at: new Date(),
-          scale: wb.name, mode: TS.capture === 'manual' ? 'Manual' : 'Auto',
+          scale: wb.name, mode: 'Auto',
           // real frames only — never the demo template shots on the desktop app
           images: NATIVE ? [] : [DB.IMGS[TS.passes.length * 2 % 4], DB.IMGS[(TS.passes.length * 2 + 1) % 4]]
         };
+        capturingPass = true;                   // cleared once this pass settles
+        const releaseCapture = () => { capturingPass = false; syncBtns(); };
         TS.passes.push(_pass);
         // Grab a real frame from every camera and persist it with the pass.
         if (NATIVE) {
@@ -1005,13 +1157,12 @@
               const real = res.results.filter(x => x.ok && x.dataUrl).map(x => x.dataUrl);
               if (real.length) { _pass.images = real; try { repaint(); } catch (e) {} }
             }
-          }).catch(() => {});
-        }
+          }).catch(() => {}).then(releaseCapture, releaseCapture);
+        } else releaseCapture();
         U.$$('.cam__flash', term).forEach(f => { f.classList.remove('is-fire'); void f.offsetWidth; f.classList.add('is-fire'); });
         const nCam = DB.cameras.filter(c => c.wbId === wb.id).length;
         U.toast('ok', TS.weighType + ' captured — ' + num(w) + ' kg',
-          nCam + ' camera image' + (nCam === 1 ? '' : 's') + ' attached to pass ' + TS.passes.length +
-          (TS.capture === 'manual' ? ' · marked manual ✱' : ''));
+          nCam + ' camera image' + (nCam === 1 ? '' : 's') + ' attached to pass ' + TS.passes.length);
         // only Multi mode rolls to the next weighment type on the same form —
         // a Double ticket's second entry happens via recall, never here
         if (TS.mode === 'Multi') TS.weighType = TS.weighType === 'Tare' ? 'Gross' : 'Tare';
@@ -1020,9 +1171,19 @@
       }
 
       function complete() {
+        if (savingTicket) return;                       // a ticket save is already in flight — ignore the extra press
         if (!requiredOk()) { U.toast('warn', 'Incomplete', 'Fill every required field and capture a weight.'); return; }
+        // Hard gate: never let Continue create a SECOND ticket for a vehicle that
+        // already has an open one. This catches an operator moving too fast to
+        // read the inline hint under the Vehicle field.
+        if (!TS.recallOf) {
+          const openT = openTicketFor(TS.vehicleId);
+          if (openT && gateOverride !== openT.id) { openTicketGate(openT); return; }
+        }
+        savingTicket = true; syncBtns();                // claimed synchronously, before any await point
         const finishing = willComplete();               // false = first weighment only -> ticket saved as Active (legacy flow)
         const n = netOf();
+        const np = normPair();                          // non-null on a two-pass Double ticket: heavier reading = gross
         const wb = DB.map.wb[DB.settings.connectedScale];
         const rec = TS.recallOf ? DB.transactions.find(t => t.id === TS.recallOf) : null;
         const me = (window.AUTH && window.AUTH.user) || {};
@@ -1037,14 +1198,16 @@
           accountId: rec ? rec.accountId : null,
           driverId: TS.driverId, productId: TS.productId, gateId: TS.gateId,
           tare: tareOf(), gross: grossOf(), net: n,
-          tareAt: (TS.passes.filter(p => p.kind === 'Tare').pop() || {}).at || null,
-          grossAt: (TS.passes.filter(p => p.kind === 'Gross').pop() || {}).at || null,
+          tareAt: ((np ? np.tarePass : TS.passes.filter(p => p.kind === 'Tare').pop()) || {}).at || null,
+          grossAt: ((np ? np.grossPass : TS.passes.filter(p => p.kind === 'Gross').pop()) || {}).at || null,
           passes: TS.passes.slice(), cf: Object.assign({}, TS.cf),
           manual: TS.passes.some(p => p.mode === 'Manual')
         });
         if (!rec) DB.transactions.unshift(t);
 
         const finish = function () {
+          savingTicket = false;                         // the one and only release point
+          gateOverride = null;                          // next truck gets the gate again
           DB.audit.unshift({
             id: 'AUX' + Date.now(), table: 'Transaction', op: rec ? 'UPDATE' : 'INSERT', at: new Date(),
             user: me.username || 'operator',
@@ -1091,8 +1254,21 @@
             passes: newPasses.map((p, i, arr) => ({
               seq: p.seq || (i + 1), kind: p.kind, weight: p.weight, at: fSqlDT(p.at),
               net: (i === arr.length - 1) ? n : null, manual: p.mode === 'Manual'
-            }))
+            })),
+            // Final Gross/Tare/Net for a completing two-pass ticket, ordered
+            // heavier-is-gross. Sent as its own block rather than folded into
+            // the pass rows because on a RECALLED ticket only the new pass is
+            // inserted here — the first pass's row is already in the database
+            // and has to be corrected too, or the swapped pair survives.
+            normalize: (finishing && np) ? {
+              grossSeq: seqOf(np.grossPass), tareSeq: seqOf(np.tarePass),
+              netSeq: Math.max(seqOf(np.grossPass), seqOf(np.tarePass)),
+              gross: np.gross, tare: np.tare, net: n
+            } : null
           };
+          // try/catch as well as .catch: a synchronous throw here would otherwise
+          // strand savingTicket and lock the terminal out of every later save.
+          try {
           window.weighcore.data.saveTicket(payload).then(function (r) {
             if (r && r.ok) {
               if (!isUpdate && r.ticketNo) { t.ticketNo = r.ticketNo; t.id = 'T' + r.ticketNo; }
@@ -1106,6 +1282,10 @@
             U.toast('danger', 'Database save failed', String((e && e.message) || e) + ' — ticket kept on screen.');
             finish();
           });
+          } catch (e) {
+            U.toast('danger', 'Database save failed', String((e && e.message) || e) + ' — ticket kept on screen.');
+            finish();
+          }
         } else {
           finish();
         }
@@ -1114,6 +1294,10 @@
       /* keyboard */
       this._keys = (e) => {
         if (U.anyOpen()) return;
+        // OS key auto-repeat fires keydown ~30x/sec while a key is held. Without
+        // this, holding F7 replayed the whole save that many times — the cause of
+        // the tickets carrying several identical passes. One press = one action.
+        if (e.repeat) return;
         if (e.key === 'F8') { e.preventDefault(); capture(); }
         if (e.key === 'F7') { e.preventDefault(); complete(); }
       };
@@ -1176,6 +1360,12 @@
   }
 
   /* ----------------------------------------------------------------------
+     DORMANT — the client asked for weight editing to be removed, so the button
+     that used to call this was taken out of the ticket drawer. Nothing in the
+     UI reaches it now. Kept (rather than deleted) so the working flow is still
+     on hand if the client ever reverses that decision; re-enabling it means
+     restoring the drawer button and its click handler in the ticket drawer.
+
      Edit weights on a saved ticket — Super Admin only (same gate as delete:
      a weighment ticket is a commercial record). The backend writes the old
      value, new value, reason and username to dbo.TransactionAudit in the
@@ -1625,9 +1815,10 @@
           '<button class="btn btn--primary" id="dSlip">' + icon('printer') + 'Weighment slip</button>' +
           '<button class="btn" id="dCopy">' + icon('qr') + 'Verify QR</button>' +
           '<div class="spacer"></div>' +
+          // "Edit weights" was removed from the UI at the client's request. The
+          // dialog, the IPC handler and the dbo.TransactionAudit backend are all
+          // left in place but are no longer reachable from any screen or role.
           (t.deleted ? '' :
-            (window.AUTH.canDelete() && t.rid && t.tare != null && t.gross != null
-              ? '<button class="btn" id="dEdit">' + icon('edit') + 'Edit weights</button>' : '') +
             (t.status !== 'Void' ? '<button class="btn btn--danger" id="dVoid">' + icon('ban') + 'Void ticket</button>' : '') +
             (window.AUTH.canDelete() ? '<button class="btn btn--danger" id="dDel">' + icon('trash') + 'Delete ticket</button>' : '')) +
           (t.deleted && window.AUTH.canDelete() ? '<button class="btn" id="dRestore">' + icon('refresh') + 'Restore ticket</button>' : '') +
@@ -1667,7 +1858,6 @@
         }
         if (e.target.closest('#dSlip')) { V.transactions.slip(t); return; }
         if (e.target.closest('#dCopy')) { U.toast('ok', 'QR payload copied', qrPayload(t).slice(0, 52) + '…'); return; }
-        if (e.target.closest('#dEdit')) { editWeightsFlow(t); return; }
         if (e.target.closest('#dDel')) { deleteFlow(t); return; }
         if (e.target.closest('#dRestore')) {
           const i = DB.deleted.indexOf(t);
@@ -1716,18 +1906,15 @@
     },
 
     /* ---- printable slip — matches the legacy WEIGHMAST printout ---- */
-    /* One slip body per letterhead: identical in every way except the company
-       name on line 1. opts.images (rows from imagesForTxn) embeds the stored
-       frames as data URLs so an exported PDF is fully self-contained. */
-    slipHtml(t, companyName, opts) {
+    /* The values on one company's slip — the SINGLE derivation feeding both
+       the HTML/PDF renderer and the Word (.docx) builder, so the two formats
+       can never disagree (letterhead, party override, WB number included). */
+    slipData(t, companyName, opts) {
       opts = opts || {};
       const v = DB.map.vehicle[t.vehicleId] || {};
       const opUser = (DB.map.user[t.operatorId] || {}).username || (((window.AUTH || {}).user) || {}).username || 'admin';
       const fT12 = (d) => d ? (fDate(d) + ' ' + fTime(d)) : '—';
       const kgv = (val) => val != null ? val + ' Kg' : '—';
-      const row = (k, val, strong) => '<div class="lslip__r"><dt>' + esc(k) + '</dt><dd>:&nbsp;' +
-        (strong ? '<b>' : '') + esc(val) + (strong ? '</b>' : '') + '</dd></div>';
-
       const slipCfg = (window.weighcore && window.weighcore.slipConfig && window.weighcore.slipConfig()) || null;
       const coLine = (/^m\/s/i.test(String(companyName)) ? '' : 'M/s. ') + companyName;
       // per-letterhead Party Name (config slip.partyOverrides) — e.g. the AQUA
@@ -1741,7 +1928,26 @@
       const wbNum = (String(scale).match(/(\d+)$/) || [])[1];
       const line3 = wbNum ? ('PACKAGE - 5 ; WB - 0' + wbNum)
         : (((t.cf && t.cf.cf4) || siteCode(t.siteId)) + ' ; WB - ' + ((t.cf && t.cf.cf5) || wbName(t.wbId)));
+      return {
+        company: coLine, project: project, line3: line3, printTime: fT12(new Date()),
+        fields: {
+          ticketId: String(t.ticketNo), vehicleNo: vName(t.vehicleId), transporter: aName(t.transporterId),
+          product: pName(t.productId), gate: gName(t.gateId),
+          vehicleType: t.cf.cf1 || v.type || '—', partyName: partyOverride || t.cf.cf2 || '—',
+          buyerName: t.cf.cf3 || '—', packageNo: t.cf.cf4 || '—', wbNo: t.cf.cf5 || '—'
+        },
+        weights: {
+          gross: kgv(t.gross), tare: kgv(t.tare), net: kgv(t.net),
+          grossTime: t.grossAt ? fT12(t.grossAt) : '—', tareTime: t.tareAt ? fT12(t.tareAt) : '—'
+        },
+        manual: !!t.manual, operator: opUser
+      };
+    },
 
+    /* the photo set for one slip — the same objects (base64 data URLs from
+       images:forTxn) feed the HTML gallery, the PDF and the Word copy */
+    slipShots(t, opts) {
+      opts = opts || {};
       const shots = [];
       if (opts.images && opts.images.length) {
         opts.images.forEach((im) => {
@@ -1752,38 +1958,48 @@
         (t.passes || []).forEach(p => (p.images || []).forEach((src, i) =>
           shots.push({ src, cap: 'camera ' + (i + 1) + ' Weighment: #' + p.seq })));
       }
+      return shots;
+    },
 
+    /* One slip body per letterhead: identical in every way except the company
+       name on line 1. opts.images (rows from imagesForTxn) embeds the stored
+       frames as data URLs so an exported PDF is fully self-contained. */
+    slipHtml(t, companyName, opts) {
+      const d = this.slipData(t, companyName, opts);
+      const shots = this.slipShots(t, opts);
+      const row = (k, val, strong) => '<div class="lslip__r"><dt>' + esc(k) + '</dt><dd>:&nbsp;' +
+        (strong ? '<b>' : '') + esc(val) + (strong ? '</b>' : '') + '</dd></div>';
       return '<div class="lslip">' +
           '<div class="lslip__head">' +
-            '<h3>' + esc(coLine) + '.</h3>' +
-            '<p>' + esc(project) + '.</p>' +
-            '<p>' + esc(line3) + '.</p>' +
+            '<h3>' + esc(d.company) + '.</h3>' +
+            '<p>' + esc(d.project) + '.</p>' +
+            '<p>' + esc(d.line3) + '.</p>' +
           '</div>' +
-          '<div class="lslip__pt">Print Time :&nbsp;&nbsp;' + esc(fT12(new Date())) + '</div>' +
+          '<div class="lslip__pt">Print Time :&nbsp;&nbsp;' + esc(d.printTime) + '</div>' +
           '<div class="lslip__cols">' +
             '<div>' +
-              row('TicketID', t.ticketNo) +
-              row('Vehicle No.', vName(t.vehicleId)) +
-              row('Transporter', aName(t.transporterId)) +
-              row('Product', pName(t.productId)) +
-              row('Gate', gName(t.gateId)) +
+              row('TicketID', d.fields.ticketId) +
+              row('Vehicle No.', d.fields.vehicleNo) +
+              row('Transporter', d.fields.transporter) +
+              row('Product', d.fields.product) +
+              row('Gate', d.fields.gate) +
             '</div><div>' +
-              row('Vehicle Type', t.cf.cf1 || v.type || '—') +
-              row('Party Name', partyOverride || t.cf.cf2 || '—') +
-              row('Buyer Name', t.cf.cf3 || '—') +
-              row('Package No', t.cf.cf4 || '—') +
-              row('WeighBridge No', t.cf.cf5 || '—') +
+              row('Vehicle Type', d.fields.vehicleType) +
+              row('Party Name', d.fields.partyName) +
+              row('Buyer Name', d.fields.buyerName) +
+              row('Package No', d.fields.packageNo) +
+              row('WeighBridge No', d.fields.wbNo) +
             '</div>' +
           '</div>' +
           '<hr class="lslip__rule">' +
           '<div class="lslip__cols">' +
             '<div>' +
-              row('Gross Weight', kgv(t.gross)) +
-              row('Tare Weight', kgv(t.tare)) +
-              row('Net Weight', kgv(t.net), true) +
+              row('Gross Weight', d.weights.gross) +
+              row('Tare Weight', d.weights.tare) +
+              row('Net Weight', d.weights.net, true) +
             '</div><div>' +
-              row('Gross Time', t.grossAt ? fT12(t.grossAt) : '—') +
-              row('Tare Time', t.tareAt ? fT12(t.tareAt) : '—') +
+              row('Gross Time', d.weights.grossTime) +
+              row('Tare Time', d.weights.tareTime) +
             '</div>' +
           '</div>' +
           // Filled in below from disk for saved tickets — a recalled ticket
@@ -1793,9 +2009,9 @@
                 '<figure class="lslip__shot"><img src="' + s.src + '" alt="' + esc(s.cap) + '">' +
                 '<figcaption>' + esc(s.cap) + '</figcaption></figure>').join('') + '</div>'
             : '') + '</div>' +
-          (t.manual ? '<p style="margin:8px 0"><b>&#10033; MANUAL ENTRY</b> — one or more weights were keyed by the operator, not read from the indicator.</p>' : '') +
+          (d.manual ? '<p style="margin:8px 0"><b>&#10033; MANUAL ENTRY</b> — one or more weights were keyed by the operator, not read from the indicator.</p>' : '') +
           '<div class="lslip__foot">' +
-            '<div>User Name :&nbsp;&nbsp;' + esc(opUser) + '</div>' +
+            '<div>User Name :&nbsp;&nbsp;' + esc(d.operator) + '</div>' +
             '<div class="lslip__sig"><div class="line"></div>Operator Sign.</div>' +
           '</div>' +
         '</div>';
@@ -1812,7 +2028,7 @@
         '<div class="modal__body">' + this.slipHtml(t, companies[0]) + '</div>' +
         '<div class="modal__foot"><button class="btn btn--primary" onclick="window.print()">' + icon('printer') + 'Print slip</button>' +
         ((window.weighcore && window.weighcore.exportSlipPdf)
-          ? '<button class="btn" id="dPdfBoth">' + icon('download') + 'Download both PDFs</button>' : '') +
+          ? '<button class="btn" id="dPdfBoth">' + icon('download') + 'Download slips (PDF + Word)</button>' : '') +
         '<button class="btn" data-close>Close</button></div>', true);
 
       // Same disk read-back as the ticket drawer: the frames live on disk keyed
@@ -1836,16 +2052,23 @@
       const pdfBtn = U.$('#dPdfBoth');
       if (pdfBtn) pdfBtn.addEventListener('click', () => {
         pdfBtn.disabled = true; pdfBtn.textContent = 'Generating…';
-        const finish = () => { pdfBtn.disabled = false; pdfBtn.innerHTML = icon('download') + 'Download both PDFs'; };
+        const finish = () => { pdfBtn.disabled = false; pdfBtn.innerHTML = icon('download') + 'Download slips (PDF + Word)'; };
         const buildAndSend = (images) => {
-          const files = companies.map((c) => ({ company: c, html: this.slipHtml(t, c, { images }) }));
-          window.weighcore.exportSlipPdf({ ticketNo: t.ticketNo, files }).then((r) => {
+          // html renders the PDF; data drives the native Word copy — both come
+          // from the same slipData derivation, so the two formats always agree
+          const files = companies.map((c) => ({
+            company: c,
+            html: this.slipHtml(t, c, { images }),
+            data: this.slipData(t, c, { images })
+          }));
+          window.weighcore.exportSlipPdf({ ticketNo: t.ticketNo, shots: this.slipShots(t, { images }), files }).then((r) => {
             if (r && r.ok) {
-              U.toast('ok', 'PDFs saved', (r.files || []).length + ' file' + ((r.files || []).length === 1 ? '' : 's') + ' in ' + (r.dir || 'the slips folder'));
+              U.toast('ok', 'Slips saved', (r.files || []).length + ' file' + ((r.files || []).length === 1 ? '' : 's') + ' (PDF + Word) in ' + (r.dir || 'the slips folder'));
+              if (r.docxError) U.toast('warn', 'Word copies failed', r.docxError + ' — the PDFs were still saved.');
               if (r.dir && window.weighcore.openPath) window.weighcore.openPath(r.dir);
-            } else U.toast('danger', 'PDF export failed', (r && r.error) || 'unknown error');
+            } else U.toast('danger', 'Slip export failed', (r && r.error) || 'unknown error');
             finish();
-          }).catch((e) => { U.toast('danger', 'PDF export failed', String((e && e.message) || e)); finish(); });
+          }).catch((e) => { U.toast('danger', 'Slip export failed', String((e && e.message) || e)); finish(); });
         };
         if (t.rid && window.weighcore.imagesForTxn) {
           window.weighcore.imagesForTxn(t.rid)

@@ -255,6 +255,7 @@ function registerIpc() {
       const dir = path.join(baseDir, ticketNo);
       fs.mkdirSync(dir, { recursive: true });
       const outFiles = [];
+      let docxError = null;
       for (let i = 0; i < entries.length; i++) {
         const f = entries[i];
         const slug = String(f.company || 'company').toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || ('COPY-' + (i + 1));
@@ -279,9 +280,20 @@ function registerIpc() {
           try { win.destroy(); } catch (_) {}
           try { fs.unlinkSync(tmp); } catch (_) {}
         }
+        // native Word copy of the same document, from the same data object —
+        // fenced on its own so a docx failure never costs the operator the PDFs
+        if (f.data) {
+          try {
+            const buildSlipDocx = require('./src/slip-docx');
+            const dbuf = await buildSlipDocx(f.data, (payload && payload.shots) || []);
+            const dout = path.join(dir, 'Ticket-' + ticketNo + '-' + slug + '.docx');
+            fs.writeFileSync(dout, dbuf);
+            outFiles.push(dout);
+          } catch (de) { docxError = de.message; logLine('slip docx FAILED: ' + de.message); }
+        }
       }
-      logLine('slip pdf x' + outFiles.length + ' ticket #' + ticketNo + ' -> ' + dir);
-      return { ok: true, files: outFiles, dir };
+      logLine('slip export x' + outFiles.length + ' ticket #' + ticketNo + ' -> ' + dir + (docxError ? ' (docx failed: ' + docxError + ')' : ''));
+      return { ok: true, files: outFiles, dir, docxError };
     } catch (e) { logLine('slip pdf FAILED: ' + e.message); return { ok: false, error: e.message, files: [] }; }
   });
   // open a folder in Explorer (used after the PDF export)
@@ -289,27 +301,33 @@ function registerIpc() {
     try { return await require('electron').shell.openPath(String(p || '')); } catch (e) { return e.message; }
   });
 
-  // Legacy-format report exports to Desktop\WeighCore Reports: PDF via the
-  // same offscreen print pipeline as the slips (A4 landscape — the summary
-  // is ten columns wide) and Excel as an HTML .xls that Excel opens natively.
+  // Legacy-format report exports to Desktop\WeighCore Reports.
+  //   pdf  — offscreen print pipeline, A4 landscape (ten columns wide)
+  //   xlsx — native Excel workbook via exceljs   (src/report-xlsx.js)
+  //   docx — native Word document via docx.js    (src/report-docx.js)
+  // xlsx/docx build from p.doc — the same summaryData object that renders the
+  // on-screen popup — so all three formats always carry identical rows.
   ipcMain.handle('report:export', async (_e, p) => {
     try {
-      const kind = (p && p.kind) === 'xls' ? 'xls' : 'pdf';
+      const kind = ['xlsx', 'docx', 'pdf'].indexOf(p && p.kind) >= 0 ? p.kind : 'pdf';
       const name = String((p && p.name) || 'report').replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'report';
       const html = String((p && p.html) || '');
+      const dir = path.join(app.getPath('desktop'), 'WeighCore Reports');
+      fs.mkdirSync(dir, { recursive: true });
+      if (kind === 'xlsx' || kind === 'docx') {
+        if (!p || !p.doc) return { ok: false, error: 'missing report data' };
+        const builder = kind === 'xlsx' ? require('./src/report-xlsx') : require('./src/report-docx');
+        const buf = await builder(p.doc);
+        const file = path.join(dir, name + '.' + kind);
+        fs.writeFileSync(file, buf);
+        logLine('report ' + kind + ' -> ' + file);
+        return { ok: true, file, dir };
+      }
       if (!html) return { ok: false, error: 'nothing to export' };
       let css = '';
       try { css = fs.readFileSync(path.join(__dirname, 'renderer', 'assets', 'css', 'weighmast-theme.css'), 'utf8'); } catch (_) {}
       const full = '<!doctype html><html><head><meta charset="utf-8"><style>' + css +
         'body{margin:0;background:#fff}</style></head><body>' + html + '</body></html>';
-      const dir = path.join(app.getPath('desktop'), 'WeighCore Reports');
-      fs.mkdirSync(dir, { recursive: true });
-      if (kind === 'xls') {
-        const file = path.join(dir, name + '.xls');
-        fs.writeFileSync(file, '﻿' + full, 'utf8');
-        logLine('report xls -> ' + file);
-        return { ok: true, file, dir };
-      }
       const tmp = path.join(app.getPath('temp'), 'wc-report-' + process.pid + '-' + Date.now() + '.html');
       const win = new BrowserWindow({ show: false, webPreferences: { offscreen: true, sandbox: true } });
       try {

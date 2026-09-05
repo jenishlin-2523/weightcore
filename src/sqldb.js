@@ -261,6 +261,25 @@ async function saveTicket(cfg, t) {
   }
   (t.passes || []).forEach((p, i) => statements.push(detailSql(p, i)));
 
+  /* Two-pass normalisation (see views-ops normPair): on a completing Double
+   * ticket the heavier reading is ALWAYS the gross and the lighter one the
+   * tare, so NetWeight can never come out negative — whichever button the
+   * operator pressed for each pass.
+   *
+   * Emitted as UPDATEs inside the SAME transaction as the INSERTs above so it
+   * also rewrites the FIRST pass's row, which was written on an earlier save
+   * (the recall flow only inserts the closing pass here). SequenceNo,
+   * CaptureWeight, CaptureTime and WeighmentType — the pass log — are left
+   * exactly as captured; only the derived Gross/Tare/Net columns move. */
+  const nz = t.normalize;
+  if (nz && num(nz.grossSeq) && num(nz.tareSeq) && num(nz.grossSeq) !== num(nz.tareSeq)) {
+    const where = `WHERE ReceiptTicketID=${S(rid)}`;
+    statements.push(`UPDATE TransactionDetail SET GrossWeight=${num(nz.gross)},GrossTime=CaptureTime,TareWeight=NULL,TareTime=NULL ${where} AND SequenceNo=${num(nz.grossSeq)}`);
+    statements.push(`UPDATE TransactionDetail SET TareWeight=${num(nz.tare)},TareTime=CaptureTime,GrossWeight=NULL,GrossTime=NULL ${where} AND SequenceNo=${num(nz.tareSeq)}`);
+    statements.push(`UPDATE TransactionDetail SET NetWeight=NULL ${where} AND SequenceNo<>${num(nz.netSeq)}`);
+    statements.push(`UPDATE TransactionDetail SET NetWeight=${num(nz.net)} ${where} AND SequenceNo=${num(nz.netSeq)}`);
+  }
+
   const out = await runPayload(cfg, { mode: 'tx', allocate, tid, statements }, 30000);
   const m = /OK:(\d+)/.exec(out || '');
   return { ok: !!m, ticketNo: m ? parseInt(m[1], 10) : (num(t.ticketNo) || null), receiptTicketId: rid };

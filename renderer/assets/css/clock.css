@@ -1,0 +1,81 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Clock-face time picker — styles for clock.js
+
+   Replaces the time half of a datetime-local input with an Android-style dial.
+   Every colour comes from the shared tokens in app.css, so the light and dark
+   themes both work with no extra rules. Kept in its own file so the component
+   stays self-contained and app.css is untouched.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ---- the field: native date input + a button that shows the time ---- */
+.wcdt { display: flex; gap: var(--sp-2); align-items: stretch; }
+.wcdt__date { flex: 1 1 58%; min-width: 0; }
+.wcdt__time {
+  flex: 1 1 42%; min-width: 0; text-align: left; cursor: pointer;
+  font-variant-numeric: tabular-nums; font-weight: 600; letter-spacing: .01em;
+}
+.wcdt__time:hover:not(:disabled) { border-color: var(--border-2); }
+.wcdt__time:disabled { cursor: not-allowed; opacity: .6; }
+.wcdt--timeonly .wcdt__time { flex: 1 1 100%; }
+/* the original input stays in the DOM as the value holder — just never shown */
+.wcdt__native { display: none !important; }
+
+/* ---- the popover ---- */
+.wcclock {
+  position: fixed; z-index: 200; width: 300px; padding: var(--sp-4);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-3); user-select: none;
+  animation: wcclockIn .12s var(--ease-out);
+}
+@keyframes wcclockIn { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+
+/* ---- digital readout: click the hour or the minute to edit that one ---- */
+.wcclock__read {
+  display: flex; align-items: center; justify-content: center;
+  gap: var(--sp-1); margin-bottom: var(--sp-3);
+}
+.wcclock__num {
+  font: 700 34px/1 var(--font-mono); padding: 2px 8px; border-radius: var(--r-sm);
+  background: transparent; border: 1px solid transparent; color: var(--text-3); cursor: pointer;
+}
+.wcclock__num.is-on { color: var(--brand); background: var(--brand-soft); border-color: var(--brand-line); }
+.wcclock__colon { font: 700 30px/1 var(--font-mono); color: var(--text-3); }
+.wcclock__ap { display: flex; flex-direction: column; gap: 2px; margin-left: var(--sp-3); }
+.wcclock__apb {
+  font: 600 11px/1 var(--font-sans); padding: 5px 9px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2);
+  border-radius: var(--r-xs);
+}
+.wcclock__apb.is-on { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+
+/* ---- the dial ---- */
+.wcclock__dial {
+  position: relative; margin: 0 auto; border-radius: 50%;
+  background: var(--surface-2); border: 1px solid var(--border);
+  touch-action: none; cursor: pointer;
+}
+.wcclock__marks { position: absolute; inset: 0; }
+.wcclock__mark {
+  position: absolute; transform: translate(-50%, -50%);
+  width: 34px; height: 34px; text-align: center; border-radius: 50%;
+  font: 600 14px/34px var(--font-sans); color: var(--text-2);
+  pointer-events: none; font-variant-numeric: tabular-nums;
+}
+.wcclock__mark.is-on { background: var(--brand); color: var(--brand-ink); }
+.wcclock__hand {
+  position: absolute; left: 50%; bottom: 50%; width: 2px; height: 104px;
+  margin-left: -1px; background: var(--brand); transform-origin: 50% 100%;
+  transition: transform .12s var(--ease); pointer-events: none;
+}
+/* the ring that sits over the selected number */
+.wcclock__hand::before {
+  content: ""; position: absolute; top: -17px; left: 50%;
+  width: 34px; height: 34px; margin-left: -17px; border-radius: 50%;
+  border: 2px solid var(--brand);
+}
+.wcclock__hub {
+  position: absolute; left: 50%; top: 50%; width: 8px; height: 8px;
+  margin: -4px 0 0 -4px; border-radius: 50%; background: var(--brand); pointer-events: none;
+}
+
+.wcclock__foot { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-4); }

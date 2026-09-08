@@ -112,7 +112,7 @@
       cols: [
         { label: 'Gate', get: r => '<b>' + esc(r.name) + '</b>' },
         { label: 'Direction', get: r => '<span class="badge badge--' + (r.type === 'BOTH' ? 'brand' : r.type === 'IN' ? 'ok' : 'info') + '">' + esc(r.type) + '</span>' },
-        { label: 'Site', get: r => esc(DB.map.site[r.siteId].code) },
+        { label: 'Site', get: r => esc((DB.map.site[r.siteId] || {}).code || '—') },
         { label: 'Tickets (14d)', num: true, get: r => num(DB.transactions.filter(t => t.gateId === r.id && in14(t)).length) },
         { label: 'Status', get: r => U.activeBadge(r.active) }
       ],
@@ -158,7 +158,7 @@
       icon: 'scale', data: () => DB.weighbridges, add: 'Add weighbridge',
       cols: [
         { label: 'Scale', get: r => '<div class="cellstack"><b>' + esc(r.name) + '</b><span>' + esc(r.platform) + '</span></div>' },
-        { label: 'Site', get: r => esc(DB.map.site[r.siteId].code) },
+        { label: 'Site', get: r => esc((DB.map.site[r.siteId] || {}).code || '—') },
         { label: 'Indicator', get: r => esc(r.indicator) },
         { label: 'Serial', get: r => '<span class="mono">' + esc(r.port) + ' · ' + r.baud + ' ' + r.dataBits + r.parity[0] + r.stopBits + '</span>' },
         { label: 'Capacity', num: true, get: r => num(r.capacity) + ' kg' },
@@ -372,6 +372,38 @@
   /* ======================================================================
      REPORTS
      ====================================================================== */
+  /* ----------------------------------------------------------------------
+     A ticket's REPORTING timestamp is the moment it became Complete — the
+     later of its two pass times — not the moment it was created.
+
+     CreationTime (t.at) is stamped when the FIRST pass is stored, so a truck
+     that tared at 8:55 and grossed at 9:10 was filed under 8:55 and vanished
+     from a 9:00-onwards report even though the weighment finished inside the
+     window.
+
+     Which pass is last depends on the direction of the movement, so this takes
+     whichever of grossAt/tareAt is LATER rather than assuming Gross:
+       · tare first, gross second (outgoing) -> grossAt is the later one
+       · gross first, tare second (incoming) -> tareAt is the later one
+
+     A ticket with only one pass so far is Active, and the Status filter
+     defaults to 'Complete' so those are normally excluded — but "All statuses"
+     is selectable, so fall back to the single pass it does have and finally to
+     creation time. That way such a ticket is still placed on a sensible date
+     rather than silently dropped.
+
+     data-live.js converts at/tareAt/grossAt to Date objects; the +new Date()
+     coercion keeps this correct for the demo data and for any raw string too.
+     ---------------------------------------------------------------------- */
+  const effectiveAt = (t) => {
+    const g = t.grossAt ? +new Date(t.grossAt) : null;
+    const r = t.tareAt ? +new Date(t.tareAt) : null;
+    if (g != null && r != null) return new Date(Math.max(g, r));
+    if (g != null) return new Date(g);
+    if (r != null) return new Date(r);
+    return t.at;
+  };
+
   const RQ = {
     from: new Date(DB.NOW.getTime() - 6 * 864e5), to: DB.NOW,
     type: '', status: 'Complete', mode: '', product: '', transporter: '', vehicle: '',
@@ -385,6 +417,7 @@
         title: 'Reports', sub: 'Filter, preview and export — every dataset reconciles to the same ledger',
         actions: '<button class="btn" id="rPrint">' + icon('printer') + 'Print</button>' +
           '<button class="btn" id="rXls">' + icon('download') + 'Excel</button>' +
+          '<button class="btn" id="rDocx">' + icon('download') + 'Word</button>' +
           '<button class="btn" id="rPdf">' + icon('download') + 'PDF</button>'
       }) +
       U.tabs([{ k: 'transaction', t: 'Transaction report' }, { k: 'master', t: 'Master reports' }, { k: 'reconcile', t: 'Reconciliation' }], tab, 'data-rtab') +
@@ -432,7 +465,9 @@
 
     rows() {
       return DB.transactions.filter(t => {
-        if (t.at < RQ.from || t.at > RQ.to) return false;
+        // the ticket falls in the range by WHEN IT COMPLETED, not when it started
+        const eff = effectiveAt(t);
+        if (eff < RQ.from || eff > RQ.to) return false;
         if (RQ.status && t.status !== RQ.status) return false;
         if (RQ.type && t.type !== RQ.type) return false;
         if (RQ.mode && t.mode !== RQ.mode) return false;
@@ -497,7 +532,7 @@
           { label: 'Net (MT)', num: true, get: t => t.net != null ? '<b>' + mt(t.net, 3) + '</b>' : '—' },
           { label: 'Buyer', get: t => esc(t.cf.cf3 || '—') },
           { label: 'Package', get: t => esc(t.cf.cf4 || '—') },
-          { label: 'Site', get: t => esc(DB.map.site[t.siteId].code) },
+          { label: 'Site', get: t => esc((DB.map.site[t.siteId] || {}).code || '—') },
           { label: 'Status', get: t => U.statusBadge(t.status) }
         ], rows.slice(0, 300), {
           zebra: true, compact: true,
@@ -506,9 +541,10 @@
       });
     },
 
-    /* the legacy "Transaction Summary Report" document — centred company
-       header, filter line, one row per ticket, weights as plain "NNNN Kg" */
-    summaryDoc() {
+    /* the values of the legacy "Transaction Summary Report" — the SINGLE
+       source feeding the on-screen popup, the PDF, the Excel workbook and
+       the Word document, so all four always carry identical rows/totals */
+    summaryData() {
       const rows = this.rows().slice().sort((a, b) => a.ticketNo - b.ticketNo);
       const slipCfg = (window.weighcore && window.weighcore.slipConfig && window.weighcore.slipConfig()) || null;
       const co0 = (slipCfg && slipCfg.companies && slipCfg.companies[0]) || DB.company.name;
@@ -520,27 +556,64 @@
         return fDate(d) + ' ' + p2(h) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds()) + ' ' + ap;
       };
       const kgv = (v) => v != null ? v + ' Kg' : '';
-      const td = (v, right) => '<td' + (right ? ' style="text-align:right"' : '') + '>' + esc(v == null ? '' : String(v)) + '</td>';
       const net = rows.reduce((n, t) => n + (t.net || 0), 0);
+      return {
+        company: company, title: 'Transaction Summary Report',
+        filter: '(Filtered for: Transaction Date between ' + fFull(RQ.from) + ' To ' + fFull(RQ.to) + ' )',
+        columns: ['Ticket ID', 'Vehicle Number', 'Product', 'Scale Name', 'Transaction Type', 'Gross Time', 'Gross Weight', 'Tare Time', 'Tare Weight', 'Net Weight'],
+        // columns 6/8/9 (weights) are right-aligned everywhere they render
+        rightCols: [6, 8, 9],
+        rows: rows.map(t => [
+          String(t.ticketNo), vName(t.vehicleId), pName(t.productId),
+          (DB.map.wb[t.wbId] || {}).name || '', t.type,
+          t.grossAt ? fT12(t.grossAt) : '', kgv(t.gross),
+          t.tareAt ? fT12(t.tareAt) : '', kgv(t.tare), kgv(t.net)
+        ]),
+        totalLabel: 'Total — ' + rows.length + ' tickets', totalNet: kgv(net),
+        name: 'Transaction-Summary-' + fDate(RQ.from) + '-to-' + fDate(RQ.to)
+      };
+    },
+
+    /* the on-screen/PDF rendering of summaryData — same markup as always */
+    summaryDoc() {
+      const d = this.summaryData();
+      const td = (v, right) => '<td' + (right ? ' style="text-align:right"' : '') + '>' + esc(v == null ? '' : String(v)) + '</td>';
       return '<div class="repdoc">' +
-        '<div class="repdoc__head"><h3>' + esc(company) + '</h3><p>Transaction Summary Report</p></div>' +
-        '<p class="repdoc__filter">(Filtered for: Transaction Date between ' + esc(fFull(RQ.from)) + ' To ' + esc(fFull(RQ.to)) + ' )</p>' +
+        '<div class="repdoc__head"><h3>' + esc(d.company) + '</h3><p>' + esc(d.title) + '</p></div>' +
+        '<p class="repdoc__filter">' + esc(d.filter) + '</p>' +
         '<table class="repdoc__tbl" border="1" cellspacing="0" cellpadding="4"><thead><tr>' +
-        ['Ticket ID', 'Vehicle Number', 'Product', 'Scale Name', 'Transaction Type', 'Gross Time', 'Gross Weight', 'Tare Time', 'Tare Weight', 'Net Weight']
-          .map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' +
-        rows.map(t =>
-          '<tr>' + td(t.ticketNo) + td(vName(t.vehicleId)) + td(pName(t.productId)) +
-          td((DB.map.wb[t.wbId] || {}).name || '') + td(t.type) +
-          td(t.grossAt ? fT12(t.grossAt) : '') + td(kgv(t.gross), true) +
-          td(t.tareAt ? fT12(t.tareAt) : '') + td(kgv(t.tare), true) +
-          td(kgv(t.net), true) + '</tr>').join('') +
+        d.columns.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' +
+        d.rows.map(r =>
+          '<tr>' + r.map((v, i) => td(v, d.rightCols.indexOf(i) >= 0)).join('') + '</tr>').join('') +
         '</tbody><tfoot><tr>' +
-        '<td colspan="6"><b>Total — ' + rows.length + ' tickets</b></td>' +
-        '<td></td><td></td><td></td><td style="text-align:right"><b>' + kgv(net) + '</b></td>' +
+        '<td colspan="6"><b>' + esc(d.totalLabel) + '</b></td>' +
+        '<td></td><td></td><td></td><td style="text-align:right"><b>' + esc(d.totalNet) + '</b></td>' +
         '</tr></tfoot></table></div>';
     },
 
-    /* pop-up view of the summary report with Excel / PDF export */
+    /* one export path for every button (popup AND page header).
+       kind: 'xlsx' | 'docx' | 'pdf'. */
+    exportAs(kind, btn) {
+      const self = V.reports;
+      if (!RQ.ran) { U.toast('warn', 'Run the report first', 'Pick the period, press Run report, then export.'); return; }
+      if (!(window.weighcore && window.weighcore.exportReport)) {
+        U.toast('danger', 'Export not available', 'Exports need the desktop build.'); return;
+      }
+      if (btn) btn.disabled = true;
+      const d = self.summaryData();
+      window.weighcore.exportReport({ kind, name: d.name, html: self.summaryDoc(), doc: d }).then((r) => {
+        if (btn) btn.disabled = false;
+        if (r && r.ok) {
+          U.toast('ok', ({ xlsx: 'Excel', docx: 'Word', pdf: 'PDF' })[kind] + ' exported', r.file || 'saved');
+          if (r.dir && window.weighcore.openPath) window.weighcore.openPath(r.dir);
+        } else U.toast('danger', 'Export failed', (r && r.error) || 'unknown error');
+      }).catch((e) => { if (btn) btn.disabled = false; U.toast('danger', 'Export failed', String((e && e.message) || e)); });
+    },
+
+    /* pop-up view of the summary report with Excel / Word / PDF export.
+       NB: the buttons carry rep* ids — the page header already owns #rXls /
+       #rPdf, and duplicated ids made U.$() bind the popup's handlers to the
+       header buttons, leaving these ones dead. Never reuse those ids here. */
     summaryPopup() {
       const self = this;
       const canExport = !!(window.weighcore && window.weighcore.exportReport);
@@ -549,25 +622,16 @@
         '<div class="card__sub">' + fDate(RQ.from) + ' → ' + fDate(RQ.to) + ' · ' + this.rows().length + ' tickets</div></div>' +
         '<div class="spacer"></div>' +
         (canExport
-          ? '<button class="btn btn--sm" id="rXls">' + icon('download') + 'Export Excel</button>' +
-            '<button class="btn btn--sm btn--primary" id="rPdf">' + icon('download') + 'Export PDF</button>'
+          ? '<button class="btn btn--sm" id="repXls">' + icon('download') + 'Export Excel</button>' +
+            '<button class="btn btn--sm" id="repDocx">' + icon('download') + 'Export Word</button>' +
+            '<button class="btn btn--sm btn--primary" id="repPdf">' + icon('download') + 'Export PDF</button>'
           : '') +
         '<button class="iconbtn" data-close>' + icon('x') + '</button></div>' +
         '<div class="modal__body">' + this.summaryDoc() + '</div>', true);
-      const send = (kind, btn) => {
-        btn.disabled = true;
-        const name = 'Transaction-Summary-' + fDate(RQ.from) + '-to-' + fDate(RQ.to);
-        window.weighcore.exportReport({ kind, name, html: self.summaryDoc() }).then((r) => {
-          btn.disabled = false;
-          if (r && r.ok) {
-            U.toast('ok', kind === 'xls' ? 'Excel exported' : 'PDF exported', r.file || 'saved');
-            if (r.dir && window.weighcore.openPath) window.weighcore.openPath(r.dir);
-          } else U.toast('danger', 'Export failed', (r && r.error) || 'unknown error');
-        }).catch((e) => { btn.disabled = false; U.toast('danger', 'Export failed', String((e && e.message) || e)); });
-      };
-      const bx = U.$('#rXls'), bp = U.$('#rPdf');
-      if (bx) bx.addEventListener('click', () => send('xls', bx));
-      if (bp) bp.addEventListener('click', () => send('pdf', bp));
+      const bx = U.$('#repXls'), bw = U.$('#repDocx'), bp = U.$('#repPdf');
+      if (bx) bx.addEventListener('click', () => self.exportAs('xlsx', bx));
+      if (bw) bw.addEventListener('click', () => self.exportAs('docx', bw));
+      if (bp) bp.addEventListener('click', () => self.exportAs('pdf', bp));
     },
 
     master() {
@@ -576,9 +640,9 @@
         { k: 'account', t: 'Accounts', rows: DB.accounts, cols: [['Company', r => r.name], ['Transporter', r => r.isTransporter ? 'Yes' : 'No'], ['Account', r => r.isAccount ? 'Yes' : 'No'], ['Contact', r => r.contact || '—'], ['Phone', r => r.phone || '—'], ['Active', r => r.active ? 'Yes' : 'No']] },
         { k: 'product', t: 'Products', rows: DB.products, cols: [['Product', r => r.name], ['Code', r => r.code], ['Unit', r => r.unit], ['Rate/MT', r => r.rate || '—'], ['Active', r => r.active ? 'Yes' : 'No']] },
         { k: 'driver', t: 'Drivers', rows: DB.drivers, cols: [['Name', r => r.name], ['Licence', r => r.licence], ['Phone', r => r.phone], ['Transporter', r => aName(r.accountId)], ['Active', r => r.active ? 'Yes' : 'No']] },
-        { k: 'gate', t: 'Gates', rows: DB.gates, cols: [['Gate', r => r.name], ['Type', r => r.type], ['Site', r => DB.map.site[r.siteId].code], ['Active', r => r.active ? 'Yes' : 'No']] },
+        { k: 'gate', t: 'Gates', rows: DB.gates, cols: [['Gate', r => r.name], ['Type', r => r.type], ['Site', r => (DB.map.site[r.siteId] || {}).code || '—'], ['Active', r => r.active ? 'Yes' : 'No']] },
         { k: 'unit', t: 'Units', rows: DB.units, cols: [['Unit', r => r.name], ['Description', r => r.desc], ['Decimals', r => r.decimals]] },
-        { k: 'wb', t: 'Weighbridges', rows: DB.weighbridges, cols: [['Scale', r => r.name], ['Site', r => DB.map.site[r.siteId].code], ['Indicator', r => r.indicator], ['Port', r => r.port], ['Baud', r => r.baud], ['Capacity', r => num(r.capacity)], ['Status', r => r.status]] },
+        { k: 'wb', t: 'Weighbridges', rows: DB.weighbridges, cols: [['Scale', r => r.name], ['Site', r => (DB.map.site[r.siteId] || {}).code || '—'], ['Indicator', r => r.indicator], ['Port', r => r.port], ['Baud', r => r.baud], ['Capacity', r => num(r.capacity)], ['Status', r => r.status]] },
         { k: 'camera', t: 'Cameras', rows: DB.cameras, cols: [['Camera', r => r.name], ['Type', r => r.type], ['URL', r => r.url], ['IP', r => r.ip], ['Port', r => r.port], ['Scale', r => r.wbId ? DB.map.wb[r.wbId].name : '—']] },
         { k: 'role', t: 'Roles', rows: DB.roles, cols: [['Role', r => r.name], ['Description', r => r.desc], ['Users', r => r.users]] }
       ];
@@ -588,7 +652,10 @@
         sets.map(s => '<button class="pill' + (s.k === active ? ' is-on' : '') + '" data-mset="' + s.k + '">' + esc(s.t) + '</button>').join('') + '</div>' +
         U.card({
           title: set.t + ' report', sub: set.rows.length + ' records · as at ' + fDT(DB.NOW), flush: true,
-          body: U.table(set.cols.map(([label, get], i) => ({ label, get, num: i > 0 && typeof set.rows[0][Object.keys(set.rows[0])[0]] === 'number' })), set.rows, { zebra: true, compact: true })
+          body: U.table(set.cols.map(([label, get], i) => {
+            const first = set.rows[0];   // an empty master set must not crash the tab
+            return { label, get, num: i > 0 && !!first && typeof first[Object.keys(first)[0]] === 'number' };
+          }), set.rows, { zebra: true, compact: true })
         });
     },
 
@@ -672,8 +739,11 @@
           });
           window.ROUTER.render(); return;
         }
-        if (e.target.closest('#rXls')) { U.toast('ok', 'Excel export queued', self.rows().length + ' rows → .xlsx'); return; }
-        if (e.target.closest('#rPdf')) { U.toast('ok', 'PDF export queued', 'Rendered with company letterhead'); return; }
+        // the page-header buttons run the REAL export (they were demo stubs
+        // that only toasted "queued" — the reported "buttons do nothing")
+        if (e.target.closest('#rXls')) { self.exportAs('xlsx', e.target.closest('#rXls')); return; }
+        if (e.target.closest('#rDocx')) { self.exportAs('docx', e.target.closest('#rDocx')); return; }
+        if (e.target.closest('#rPdf')) { self.exportAs('pdf', e.target.closest('#rPdf')); return; }
         if (e.target.closest('#rPrint')) { window.print(); }
       });
     }
@@ -951,7 +1021,7 @@
           esc((u.first[0] || '') + (u.last[0] || '')) + '</span><div class="cellstack"><b>' + esc(u.first + ' ' + u.last) + '</b>' +
           '<span class="mono">' + esc(u.username) + '</span></div></div>' },
         { label: 'Role', get: u => '<span class="badge badge--brand">' + esc(DB.map.role[u.roleId].name) + '</span>' },
-        { label: 'Site scope', get: u => u.siteId ? esc(DB.map.site[u.siteId].code) : '<span class="dim">All sites</span>' },
+        { label: 'Site scope', get: u => u.siteId ? esc((DB.map.site[u.siteId] || {}).code || '—') : '<span class="dim">All sites</span>' },
         { label: 'Email', get: u => '<span class="tiny">' + esc(u.email) + '</span>' },
         { label: 'Last sign-in', get: u => '<span class="mono tiny">' + esc(u.last_login) + '</span>' },
         { label: 'Tickets (14d)', num: true, get: u => num(DB.transactions.filter(t => t.operatorId === u.id).length) },
@@ -1184,7 +1254,7 @@
             body:
               '<div class="stack">' + DB.weighbridges.filter(w => w.active).map(w =>
                 '<div class="lane"><div class="lane__ico">' + icon('cpu') + '</div><div class="lane__body">' +
-                '<div class="lane__title">' + esc(w.name) + ' — ' + esc(DB.map.site[w.siteId].code) + '</div>' +
+                '<div class="lane__title">' + esc(w.name) + ' — ' + esc((DB.map.site[w.siteId] || {}).code || '—') + '</div>' +
                 '<div class="lane__meta">agent v1.4.2 · ' + esc(w.port) + ' · heartbeat 3 s ago</div></div>' +
                 U.onlineBadge(w.status) + '</div>').join('') + '</div>' +
               '<hr class="hr">' +

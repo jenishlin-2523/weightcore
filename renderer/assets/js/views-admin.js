@@ -404,10 +404,36 @@
     return t.at;
   };
 
+  /* ----------------------------------------------------------------------
+     The report window is a range of whole MINUTES, half-open: [from, to+1min).
+
+     "From" is inclusive from :00.000 of the chosen minute. The "To" minute is
+     included in full, so the upper bound is the START of the FOLLOWING minute,
+     compared with < rather than <=.
+
+     Expressed that way consecutive windows tile exactly: 09:00-09:59 ends at
+     10:00:00.000 exclusive and 10:00-10:59 begins at 10:00:00.000 inclusive —
+     no ticket can land in both, and none can fall between them. A completion
+     at exactly 10:00:00 belongs to the 10:00 window only.
+
+     The old code padded RQ.to to :59.999 and compared <=, so 02:00-03:00 and
+     03:00-04:00 both claimed 03:00:00-03:00:59.
+     ---------------------------------------------------------------------- */
+  const MINUTE_MS = 60000;
+  const floorToMinute = (d) => { const x = new Date(d); x.setSeconds(0, 0); return x; };
+  const rangeStart = () => floorToMinute(RQ.from);
+  const rangeEndExclusive = () => new Date(floorToMinute(RQ.to).getTime() + MINUTE_MS);
+  /* true when a ticket's completion time falls in the current window */
+  const inRange = (eff, lo, hi) => eff >= lo && eff < hi;
+
   const RQ = {
     from: new Date(DB.NOW.getTime() - 6 * 864e5), to: DB.NOW,
     type: '', status: 'Complete', mode: '', product: '', transporter: '', vehicle: '',
-    site: '', cf1: '', cf3: '', cf4: '', out: 'summary', ran: false
+    site: '', cf1: '', cf3: '', cf4: '', out: 'summary', ran: false,
+    // true while the range came from a quick-range pill (or the 7-day default),
+    // i.e. a whole-day span. The hourly ledger is only meaningful once the
+    // operator has actually chosen times, so editing either From/To clears it.
+    wholeDay: true
   };
 
   V.reports = {
@@ -464,10 +490,11 @@
     },
 
     rows() {
+      // computed once, not per ticket
+      const lo = rangeStart(), hi = rangeEndExclusive();
       return DB.transactions.filter(t => {
         // the ticket falls in the range by WHEN IT COMPLETED, not when it started
-        const eff = effectiveAt(t);
-        if (eff < RQ.from || eff > RQ.to) return false;
+        if (!inRange(effectiveAt(t), lo, hi)) return false;
         if (RQ.status && t.status !== RQ.status) return false;
         if (RQ.type && t.type !== RQ.type) return false;
         if (RQ.mode && t.mode !== RQ.mode) return false;
@@ -541,6 +568,63 @@
       });
     },
 
+    /* ----------------------------------------------------------------------
+       Hourly ledger — one row per whole clock hour in the window.
+
+       Bucketed with the SAME effectiveAt() completion-time rule that rows()
+       uses and fed from rows() itself, so the hourly lines can never disagree
+       with the report's own total: every included ticket lands in exactly one
+       bucket, and the bucket totals are summed from those same tickets.
+
+       Shown only once the operator has chosen actual times (RQ.wholeDay false)
+       — a "Last 7 days" style span has no useful hourly shape. Capped at 168
+       hours (one week); past that the section is omitted and the rest of the
+       report still renders.
+
+       Empty hours are still listed, so a gap in the day is visible rather than
+       silently missing.
+       ---------------------------------------------------------------------- */
+    hourlyData() {
+      if (RQ.wholeDay) return null;
+      const lo = rangeStart(), hi = rangeEndExclusive();
+      const HOUR = 3600000;
+      const first = new Date(lo); first.setMinutes(0, 0, 0);       // the clock hour containing From
+      const count = Math.ceil((hi.getTime() - first.getTime()) / HOUR);
+      if (count < 1 || count > 168) return null;                   // > 1 week: omit the section
+
+      const buckets = [];
+      for (let i = 0; i < count; i++) {
+        const start = new Date(first.getTime() + i * HOUR);
+        buckets.push({ start, n: 0, gross: 0, tare: 0, net: 0 });
+      }
+      this.rows().forEach((t) => {
+        const i = Math.floor((effectiveAt(t).getTime() - first.getTime()) / HOUR);
+        const b = buckets[i]; if (!b) return;                      // defensive: outside the window
+        b.n++; b.gross += t.gross || 0; b.tare += t.tare || 0; b.net += t.net || 0;
+      });
+
+      const p2 = (x) => String(x).padStart(2, '0');
+      const label = (d) => p2(d.getHours()) + ':00-' + p2(d.getHours()) + ':59';
+      const kg = (v) => num(v) + ' Kg';
+      const tot = buckets.reduce((a, b) => {
+        a.n += b.n; a.gross += b.gross; a.tare += b.tare; a.net += b.net; return a;
+      }, { n: 0, gross: 0, tare: 0, net: 0 });
+
+      return {
+        title: 'Hourly breakdown',
+        // the date is only worth repeating when the window spans more than one day
+        multiDay: first.toDateString() !== new Date(hi.getTime() - 1).toDateString(),
+        columns: ['Hour', 'Tickets', 'Gross Weight', 'Tare Weight', 'Net Weight'],
+        rightCols: [1, 2, 3, 4],
+        rows: buckets.map((b) => [
+          (first.toDateString() !== new Date(hi.getTime() - 1).toDateString()
+            ? fDate(b.start) + ' ' : '') + label(b.start),
+          String(b.n), kg(b.gross), kg(b.tare), kg(b.net)
+        ]),
+        totalRow: ['Total', String(tot.n), kg(tot.gross), kg(tot.tare), kg(tot.net)]
+      };
+    },
+
     /* the values of the legacy "Transaction Summary Report" — the SINGLE
        source feeding the on-screen popup, the PDF, the Excel workbook and
        the Word document, so all four always carry identical rows/totals */
@@ -570,6 +654,9 @@
           t.tareAt ? fT12(t.tareAt) : '', kgv(t.tare), kgv(t.net)
         ]),
         totalLabel: 'Total — ' + rows.length + ' tickets', totalNet: kgv(net),
+        // null unless a specific time window was chosen; consumed identically by
+        // the on-screen popup, the PDF, the Excel workbook and the Word document
+        hourly: this.hourlyData(),
         name: 'Transaction-Summary-' + fDate(RQ.from) + '-to-' + fDate(RQ.to)
       };
     },
@@ -588,7 +675,19 @@
         '</tbody><tfoot><tr>' +
         '<td colspan="6"><b>' + esc(d.totalLabel) + '</b></td>' +
         '<td></td><td></td><td></td><td style="text-align:right"><b>' + esc(d.totalNet) + '</b></td>' +
-        '</tr></tfoot></table></div>';
+        '</tr></tfoot></table>' +
+        // the hourly ledger, when a specific time window was chosen
+        (d.hourly ? '<h4 class="repdoc__sub">' + esc(d.hourly.title) + '</h4>' +
+          '<table class="repdoc__tbl" border="1" cellspacing="0" cellpadding="4"><thead><tr>' +
+          d.hourly.columns.map(h => '<th>' + esc(h) + '</th>').join('') + '</tr></thead><tbody>' +
+          d.hourly.rows.map(r =>
+            '<tr>' + r.map((v, i) => td(v, d.hourly.rightCols.indexOf(i) >= 0)).join('') + '</tr>').join('') +
+          '</tbody><tfoot><tr>' +
+          d.hourly.totalRow.map((v, i) =>
+            '<td' + (d.hourly.rightCols.indexOf(i) >= 0 ? ' style="text-align:right"' : '') +
+            '><b>' + esc(v) + '</b></td>').join('') +
+          '</tr></tfoot></table>' : '') +
+        '</div>';
     },
 
     /* one export path for every button (popup AND page header).
@@ -705,6 +804,11 @@
 
     mount(root) {
       const self = this;
+      // touching either time field means the operator chose a specific window,
+      // which is what turns the hourly ledger on
+      root.addEventListener('change', (e) => {
+        if (e.target && (e.target.id === 'rFrom' || e.target.id === 'rTo')) RQ.wholeDay = false;
+      });
       root.addEventListener('click', (e) => {
         const tb = e.target.closest('[data-rtab]');
         if (tb) { location.hash = '#/reports/' + tb.dataset.rtab; return; }
@@ -714,6 +818,7 @@
         if (qd) {
           RQ.to = DB.NOW; RQ.from = new Date(DB.NOW.getTime() - (Number(qd.dataset.days) - 1) * 864e5);
           RQ.from.setHours(0, 0, 0, 0);
+          RQ.wholeDay = true;                 // a pill is a whole-day span — no hourly ledger
           U.$('#rFrom').value = U.fInput(RQ.from); U.$('#rTo').value = U.fInput(RQ.to);
           U.$$('#rQuick .pill').forEach(p => p.classList.toggle('is-on', p === qd));
           return;
@@ -722,7 +827,11 @@
         if (sg) { RQ.out = sg.dataset.v; U.$$('[data-seg="out"] .seg__opt').forEach(o => o.classList.toggle('is-on', o === sg)); if (RQ.ran) U.$('#rOut').innerHTML = self.output(); return; }
         if (e.target.closest('#rRun')) {
           ['From', 'To'].forEach(k => { const el = U.$('#r' + k); if (el && el.value) RQ[k.toLowerCase()] = new Date(el.value); });
-          RQ.to.setSeconds(59, 999);   // the To minute is inclusive, like the legacy report's 11:59:59 PM bound
+          // Both bounds are held as exact whole minutes. The To minute is still
+          // covered in full — rangeEndExclusive() adds the minute back as an
+          // exclusive bound — instead of padding the stored value to :59.999,
+          // which used to make consecutive windows overlap.
+          RQ.from = floorToMinute(RQ.from); RQ.to = floorToMinute(RQ.to);
           ['Status', 'Type', 'Mode', 'Site', 'Product', 'Transporter', 'Vehicle', 'Cf1', 'Cf3', 'Cf4'].forEach(k => {
             const el = U.$('#r' + k); if (el) RQ[k.charAt(0).toLowerCase() + k.slice(1)] = el.value;
           });
@@ -735,7 +844,8 @@
         if (e.target.closest('#rReset')) {
           Object.assign(RQ, {
             from: new Date(DB.NOW.getTime() - 6 * 864e5), to: DB.NOW, type: '', status: 'Complete', mode: '',
-            product: '', transporter: '', vehicle: '', site: '', cf1: '', cf3: '', cf4: '', out: 'summary', ran: false
+            product: '', transporter: '', vehicle: '', site: '', cf1: '', cf3: '', cf4: '', out: 'summary', ran: false,
+            wholeDay: true
           });
           window.ROUTER.render(); return;
         }
@@ -1132,9 +1242,10 @@
               '<select class="input" style="width:96px">' + DB.units.map(u => '<option' + (u.name === S.weightUnit ? ' selected' : '') + '>' + esc(u.name) + '</option>').join('') + '</select>' +
               '<span class="dim">→</span>' +
               '<select class="input" style="width:96px">' + DB.units.map(u => '<option' + (u.name === S.reportUnit ? ' selected' : '') + '>' + esc(u.name) + '</option>').join('') + '</select>') +
-            U.setrow('Date & time format', 'Applies to screens, slips and exports.',
-              '<select class="input" style="width:150px"><option>dd-MM-yyyy</option><option>yyyy-MM-dd</option><option>MM/dd/yyyy</option></select>' +
-              '<select class="input" style="width:110px"><option>HH:mm</option><option>hh:mm tt</option></select>')
+            U.setrow('Date & time format', 'Dates read day-first (DD/MM/YYYY) everywhere — screens, pickers, slips and exports.',
+              '<span class="tag">DD/MM/YYYY</span><span class="tag">hh:mm AM/PM</span>') +
+            U.setrow('Accent colour', 'Re-skins the app for this terminal. Remembered on this machine only.',
+              (window.WCAccent ? window.WCAccent.swatches() : ''))
         });
       } else if (tab === 'company') {
         body = U.card({

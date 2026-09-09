@@ -1,7 +1,7 @@
 {
   "name": "weighcore-desktop",
   "productName": "WeighCore",
-  "version": "1.0.9",
+  "version": "1.1.0",
   "description": "WeighCore weighbridge operations terminal â€” Electron desktop app with real serial/LAN weight input, IP-camera capture, offline-first storage and hybrid VPS sync. Zero native modules (no compiler required).",
   "author": "Endel Digital",
   "license": "UNLICENSED",

@@ -348,6 +348,36 @@
     return (isRdf && toCustomer) ? all : [all[0]];
   }
 
+  /* ----------------------------------------------------------------------
+     Product follows the transaction type.
+
+     Processing is always MSW and RDF is always RDF — the operator should not
+     have to pick. Disposal is a genuine choice across many materials, so it is
+     never auto-filled.
+
+     Which product to fill in is decided from THIS terminal's own history rather
+     than a hardcoded name: whichever candidate has been used most. On this site
+     that resolves to MSW (6,185 tickets) for Processing and RDF (1,524) for
+     RDF, and it keeps working if the master is renamed or re-tagged, and on
+     WB1 with its own data. Falling back to the first candidate means the field
+     is never left blank when history is empty (a fresh install).
+     ---------------------------------------------------------------------- */
+  const FIXED_PRODUCT_TYPES = { Processing: 1, RDF: 1 };
+  function productsForType(txnType) {
+    return DB.products.filter(p => p.active && (!p.txnType || p.txnType === txnType));
+  }
+  function defaultProductFor(txnType) {
+    const list = productsForType(txnType);
+    if (!list.length) return '';
+    if (list.length === 1) return list[0].id;          // only one option: always take it
+    if (!FIXED_PRODUCT_TYPES[txnType]) return '';      // Disposal stays a real choice
+    const used = {};
+    DB.transactions.forEach(t => { if (t.productId) used[t.productId] = (used[t.productId] || 0) + 1; });
+    let best = list[0];
+    list.forEach(p => { if ((used[p.id] || 0) > (used[best.id] || 0)) best = p; });
+    return best.id;
+  }
+
   /* Party Name defaults to the site's own operating company as a convenience.
      It stays a normal editable field — RDF and Disposal tickets often carry a
      different party, and the operator must be able to change or clear it. */
@@ -356,7 +386,9 @@
   function resetTS() {
     Object.assign(TS, {
       mode: 'Double', weighType: 'Gross', txnType: 'Processing', direction: 'Plant to Yard',
-      vehicleId: '', transporterId: '', productId: '', gateId: '', driverId: '',
+      // a new ticket starts on Processing, so its product is filled in already
+      vehicleId: '', transporterId: '', productId: defaultProductFor('Processing'),
+      gateId: '', driverId: '',
       cf: { cf1: '', cf2: DEFAULT_PARTY, cf3: '', cf4: '', cf5: wbNumber(), cf6: '' },
       passes: [], recallOf: null, rid: genRid(), stable: false,
       ticketNo: Math.max.apply(null, DB.transactions.map(t => t.ticketNo)) + 1
@@ -946,7 +978,7 @@
               })
           },
           product: {
-            list: () => DB.products.filter(p => p.active && (!p.txnType || p.txnType === 'All' || p.txnType === TS.txnType)).map(p => ({ v: p.id, t: p.name })),
+            list: () => productsForType(TS.txnType).map(p => ({ v: p.id, t: p.name })),
             display: () => TS.productId ? pName(TS.productId) : '',
             pick: (id) => { TS.productId = id; refreshReceipt(); },
             addLabel: (q) => 'Add product “' + q + '”',
@@ -1060,11 +1092,14 @@
             TS.txnType = v;
             // a direction that this type does not offer must not survive the switch
             if (!directionOpts(v).some(o => o.v === TS.direction)) TS.direction = DIR_PLANT.v;
+            // Drop the current product if it does not belong to the new type —
+            // including when it no longer resolves at all, which happens after a
+            // master sync deactivates or removes it. Without the !pp case a dead
+            // id survived every switch and the field just showed a dash.
             const pp = DB.map.product[TS.productId];
-            if (pp && pp.txnType && pp.txnType !== 'All' && pp.txnType !== v) TS.productId = '';
-            // a type with exactly one product (Processing → MSW) selects itself
-            const list = DB.products.filter(p => p.active && (!p.txnType || p.txnType === 'All' || p.txnType === v));
-            if (!TS.productId && list.length === 1) TS.productId = list[0].id;
+            if (TS.productId && (!pp || (pp.txnType && pp.txnType !== v))) TS.productId = '';
+            // Processing and RDF fill their product in automatically
+            if (!TS.productId) TS.productId = defaultProductFor(v);
           }
           else if (key === 'direction') TS.direction = v;
           repaint(); return;

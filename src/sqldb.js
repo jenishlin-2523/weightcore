@@ -86,10 +86,24 @@ function transform(raw, camCfg) {
     if (n === 'rdf') return 'RDF';
     return 'Disposal';
   };
-  const products = raw.products.map((p) => ({
-    id: 'P' + p.ProductID, name: s(p.ProductName), code: s(p.ProductCode), desc: s(p.Notes),
-    unit: 'MT', rate: 0, txnType: s(p.TransactionType) || inferTxnType(p.ProductName), active: bool(p.IsActive)
-  }));
+  const products = raw.products.map((p) => {
+    /* An explicit transaction type wins. 'All' and blank BOTH mean "not
+     * decided", so both fall back to the name.
+     *
+     * 'All' used to be treated as a wildcard that showed the product under
+     * every transaction type — which is how RDF ended up offered as a Disposal
+     * product and as a Processing product, against the site's rules. Three rows
+     * in the live master carry that tag (RDF, MSW, TROMMEL), almost certainly
+     * from a migration rather than a deliberate choice. Resolving it by name
+     * puts each of them under exactly one type. */
+    const tag = s(p.TransactionType);
+    return {
+      id: 'P' + p.ProductID, name: s(p.ProductName), code: s(p.ProductCode), desc: s(p.Notes),
+      unit: 'MT', rate: 0,
+      txnType: (tag && tag !== 'All') ? tag : inferTxnType(p.ProductName),
+      active: bool(p.IsActive)
+    };
+  });
   const accounts = raw.accounts.map((a) => {
     const nm = s(a.CompanyName) || (s(a.FirstName) + ' ' + s(a.LastName)).trim();
     return {

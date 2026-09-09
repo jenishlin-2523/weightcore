@@ -373,36 +373,31 @@
      REPORTS
      ====================================================================== */
   /* ----------------------------------------------------------------------
-     A ticket's REPORTING timestamp is the moment it became Complete — the
-     later of its two pass times — not the moment it was created.
+     A ticket's REPORTING timestamp is its GROSS time. Always Gross — never
+     Tare, never CreationTime.
 
-     CreationTime (t.at) is stamped when the FIRST pass is stored, so a truck
-     that tared at 8:55 and grossed at 9:10 was filed under 8:55 and vanished
-     from a 9:00-onwards report even though the weighment finished inside the
-     window.
+     This holds even when Gross was captured BEFORE Tare, which is normal on an
+     RDF / "Both" ticket where the truck arrives loaded: such a ticket is still
+     filed under its Gross time, not wherever the Tare happened to land hours
+     later. Gross is the moment the load itself was measured, so it is the
+     moment the record belongs to.
 
-     Which pass is last depends on the direction of the movement, so this takes
-     whichever of grossAt/tareAt is LATER rather than assuming Gross:
-       · tare first, gross second (outgoing) -> grossAt is the later one
-       · gross first, tare second (incoming) -> tareAt is the later one
+     (This supersedes the earlier "later of the two passes" rule, which filed a
+     Gross-first ticket under its Tare time.)
 
-     A ticket with only one pass so far is Active, and the Status filter
-     defaults to 'Complete' so those are normally excluded — but "All statuses"
-     is selectable, so fall back to the single pass it does have and finally to
-     creation time. That way such a ticket is still placed on a sensible date
-     rather than silently dropped.
+     No Gross yet means NO reporting time: the ticket is still Active and has
+     not produced a record, so it must not appear in any time-filtered report.
+     Returning null here is what excludes it — rows() drops anything without a
+     time rather than falling back to another timestamp.
 
-     data-live.js converts at/tareAt/grossAt to Date objects; the +new Date()
-     coercion keeps this correct for the demo data and for any raw string too.
+     CreationTime is never used: it is stamped when the FIRST pass is stored, so
+     a truck that tared at 8:55 and grossed at 9:10 would be filed under 8:55
+     and vanish from a 9:00-onwards report.
+
+     data-live.js converts grossAt to a Date; the +new Date() coercion keeps
+     this correct for the demo data and for any raw string too.
      ---------------------------------------------------------------------- */
-  const effectiveAt = (t) => {
-    const g = t.grossAt ? +new Date(t.grossAt) : null;
-    const r = t.tareAt ? +new Date(t.tareAt) : null;
-    if (g != null && r != null) return new Date(Math.max(g, r));
-    if (g != null) return new Date(g);
-    if (r != null) return new Date(r);
-    return t.at;
-  };
+  const effectiveAt = (t) => (t && t.grossAt) ? new Date(+new Date(t.grossAt)) : null;
 
   /* ----------------------------------------------------------------------
      The report window is a range of whole MINUTES, half-open: [from, to+1min).
@@ -494,7 +489,9 @@
       const lo = rangeStart(), hi = rangeEndExclusive();
       return DB.transactions.filter(t => {
         // the ticket falls in the range by WHEN IT COMPLETED, not when it started
-        if (!inRange(effectiveAt(t), lo, hi)) return false;
+        // no Gross captured yet -> no reporting time -> never in a report
+        const eff = effectiveAt(t);
+        if (!eff || !inRange(eff, lo, hi)) return false;
         if (RQ.status && t.status !== RQ.status) return false;
         if (RQ.type && t.type !== RQ.type) return false;
         if (RQ.mode && t.mode !== RQ.mode) return false;
@@ -571,10 +568,11 @@
     /* ----------------------------------------------------------------------
        Hourly ledger — one row per whole clock hour in the window.
 
-       Bucketed with the SAME effectiveAt() completion-time rule that rows()
-       uses and fed from rows() itself, so the hourly lines can never disagree
-       with the report's own total: every included ticket lands in exactly one
-       bucket, and the bucket totals are summed from those same tickets.
+       Bucketed by the SAME effectiveAt() Gross-time rule that rows() uses, and
+       fed from rows() itself, so the hourly lines can never disagree with the
+       report's own total: every included ticket lands in exactly one bucket,
+       and the bucket totals are summed from those same tickets. Anything
+       without a Gross has already been dropped by rows().
 
        Shown only once the operator has chosen actual times (RQ.wholeDay false)
        — a "Last 7 days" style span has no useful hourly shape. Capped at 168

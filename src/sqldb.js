@@ -71,7 +71,7 @@ const s = (v) => (v == null ? '' : String(v)).trim();
 const bool = (v) => !!(v === 1 || v === true || v === '1');
 
 /* ---------- transform raw SQL rows -> window.DB shape ---------- */
-function transform(raw) {
+function transform(raw, camCfg) {
   const units = raw.units.map((u) => ({
     id: 'U' + u.UnitID, name: s(u.UnitName), desc: s(u.UnitName),
     decimals: s(u.UnitName).toUpperCase() === 'KG' ? 0 : (s(u.UnitName).toUpperCase() === 'MT' ? 3 : 1),
@@ -179,23 +179,36 @@ function transform(raw) {
       text: 'Ticket ' + t.ticketNo + ' — ' + t.mode + ' / ' + t.type + (t.net != null ? (' · net ' + t.net + ' kg') : ''), ref: t.id });
   });
 
-  const cameras = [
-    { id: 'C1', name: 'Lane — Front', type: 'HikVision', url: 'http://192.168.1.114/ISAPI/Streaming/channels/101/picture', ip: '192.168.1.114', port: 80, user: 'admin', wbId: (weighbridges[0] || {}).id || null, status: 'online', active: true },
-    { id: 'C2', name: 'Lane — Rear', type: 'HikVision', url: 'http://192.168.1.112/ISAPI/Streaming/channels/101/picture', ip: '192.168.1.112', port: 80, user: 'admin', wbId: (weighbridges[0] || {}).id || null, status: 'online', active: true }
-  ];
+  /* Cameras come from THIS terminal's own config.json, never from a baked-in
+   * list — the addresses differ per weighbridge, and hardcoding them made the
+   * Devices → Cameras screen show WB2's IPs on any other machine. Falls back to
+   * an empty list rather than inventing addresses when none are configured. */
+  const wbId = (weighbridges[0] || {}).id || null;
+  const cameras = (camCfg || []).map((c, i) => {
+    const host = (/^\w+:\/\/([^/:]+)/.exec(String(c.url || '')) || [])[1] || '';
+    return {
+      id: 'C' + (i + 1), name: s(c.label) || ('Camera ' + (i + 1)),
+      type: String(c.type || '').toUpperCase() === 'RTSP' ? 'RTSP' : (s(c.type) || 'IP'),
+      url: s(c.url), ip: host, port: Number(c.port) || (String(c.url || '').indexOf('rtsp:') === 0 ? 554 : 80),
+      user: s(c.username), wbId, status: 'online', active: true
+    };
+  });
 
   return { units, products, accounts, vehicles, drivers, gates, weighbridges, users, roles, cameras, transactions, audit,
     _counts: { transactions: transactions.length, vehicles: vehicles.length, accounts: accounts.length, products: products.length } };
 }
 
 /* ---------- public API ---------- */
-async function snapshot(cfg) {
+/* cameras: this terminal's config.json `cameras` array, so the Devices screen
+   shows the machine it is actually running on. Optional — omitting it just
+   leaves the camera list empty. */
+async function snapshot(cfg, cameras) {
   const scriptPath = path.join(__dirname, 'wb-query.ps1');
   const out = await runPs(['-File', scriptPath, '-Server', cfg.server, '-Database', cfg.database], 90000);
   const raw = JSON.parse(out.replace(/^﻿/, ''));
   // ConvertTo-Json collapses a 1-row table to an object; normalize every set to an array.
   for (const k of Object.keys(raw)) if (raw[k] && !Array.isArray(raw[k])) raw[k] = [raw[k]];
-  return transform(raw);
+  return transform(raw, cameras);
 }
 
 function sqlEsc(v) { return String(v == null ? '' : v).replace(/'/g, "''"); }
@@ -250,7 +263,36 @@ async function saveTicket(cfg, t) {
   let allocate = null, tid = null;
   if (t.update) {
     tid = num(t.ticketNo);
-    statements.push(`UPDATE TransactionData SET Status=${S(t.status || 'Complete')} WHERE ReceiptTicketID=${S(rid)}`);
+    /* Metadata corrected while capturing the closing weighment has to land on
+     * the ticket that already exists — writing Status alone silently discarded
+     * every other edit.
+     *
+     * Deliberately NOT touched: VehicleID/VehicleNumber and CreationTime (the
+     * ticket's identity and its reporting position stay fixed, matching the
+     * fields the UI keeps locked), and AccountID/AccountName, which the
+     * renderer always sends as null and would otherwise be wiped. No weight
+     * column is written here. */
+    const sets = [
+      `Status=${S(t.status || 'Complete')}`,
+      `TransactionType=${S(t.transactionType || 'Incoming')}`,
+      `PlantDirectionType=${NS(t.direction)}`,
+      `TransporterID=${NN(t.transporterId)}`,
+      `TransporterName=${NS(t.transporterName)}`,
+      `DriverID=${NN(t.driverId)}`,
+      `DriverName=${NS(t.driverName)}`
+    ];
+    if (await hasCol(cfg, 'TransactionData', 'CustomField1')) {
+      sets.push(`CustomField1=${NS(t.cf1)}`, `CustomField2=${NS(t.cf2)}`, `CustomField3=${NS(t.cf3)}`,
+                `CustomField4=${NS(t.cf4)}`, `CustomField5=${NS(t.cf5)}`);
+    }
+    statements.push(`UPDATE TransactionData SET ${sets.join(',')} WHERE ReceiptTicketID=${S(rid)}`);
+    /* Product and Gate live on the DETAIL rows, and the reader takes the first
+     * row that carries one — so an edit only sticks if every pass of the ticket
+     * is brought into line, not just the pass being inserted now. */
+    if (num(t.productId) || num(t.gateId)) {
+      statements.push(`UPDATE TransactionDetail SET ProductID=${NN(t.productId)},ProductName=${NS(t.productName)},` +
+        `GateID=${NN(t.gateId)},GateName=${NS(t.gateName)} WHERE ReceiptTicketID=${S(rid)}`);
+    }
   } else {
     allocate = 'SELECT ISNULL(MAX(TicketID),0)+1 FROM TransactionData';
     if (t.ticketNo) tid = num(t.ticketNo);

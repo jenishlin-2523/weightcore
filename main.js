@@ -215,7 +215,7 @@ function registerIpc() {
   ipcMain.on('site:get', (e) => { e.returnValue = (cfg && cfg.site) || null; });  // this terminal's scaleId — scopes the UI to one weighbridge
   ipcMain.on('slip:get', (e) => { e.returnValue = (cfg && cfg.slip) || null; });  // slip letterheads: { project, companies[], outDir }
   ipcMain.handle('data:refresh', async () => {
-    try { liveSnapshot = await sqldb.snapshot(cfg.db); return { ok: true, counts: liveSnapshot._counts }; }
+    try { liveSnapshot = await sqldb.snapshot(cfg.db, cfg.cameras); return { ok: true, counts: liveSnapshot._counts }; }
     catch (e) { return { ok: false, error: e.message }; }
   });
   ipcMain.handle('data:nextTicket', async () => { try { return { ok: true, ticketNo: await sqldb.nextTicketNo(cfg.db) }; } catch (e) { return { ok: false, error: e.message }; } });
@@ -420,7 +420,7 @@ async function startBackend() {
   if (backendStarted) return; backendStarted = true;
   try { store = new Store(dataDir); } catch (e) { logLine('DB init failed: ' + e.message); }
   try {
-    if (cfg.db && cfg.db.enabled) { liveSnapshot = await sqldb.snapshot(cfg.db); logLine('live snapshot ' + JSON.stringify(liveSnapshot._counts)); }
+    if (cfg.db && cfg.db.enabled) { liveSnapshot = await sqldb.snapshot(cfg.db, cfg.cameras); logLine('live snapshot ' + JSON.stringify(liveSnapshot._counts)); }
   } catch (e) { logLine('live snapshot failed: ' + e.message); }
   if (liveSnapshot) {
     const wb0 = (liveSnapshot.weighbridges || [])[0] || {};

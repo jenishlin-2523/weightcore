@@ -262,6 +262,7 @@
   const TS = {
     mode: 'Double', weighType: 'Gross', txnType: 'Processing', direction: 'Plant to Yard',
     vehicleId: '', transporterId: '', productId: '', gateId: '', driverId: '',
+    // cf2 (Party Name) is pre-filled by resetTS(); see DEFAULT_PARTY
     cf: { cf1: '', cf2: '', cf3: '', cf4: '', cf5: wbNumber(), cf6: '' },
     passes: [], tab: 'receipt',
     recallOf: null, rid: '', live: 0, target: 0, stable: false, ticketNo: null
@@ -302,11 +303,61 @@
     } else EDGE.connected = true;   // browser demo: simulated indicator is always "up"
   }
 
+  /* ----------------------------------------------------------------------
+     Direction choices depend on the transaction type. "Yard to Customer" is a
+     sale leaving the yard, so it is not offered for Disposal — only RDF can go
+     that way. Processing never shows a direction at all (it is always inbound),
+     which the caller already handles.
+
+     Stored values are matched loosely elsewhere because the legacy database
+     holds both "YardToCustomer" and "Yard to Customer"; see sameDirection().
+     ---------------------------------------------------------------------- */
+  const DIR_PLANT = { v: 'Plant to Yard', t: 'Plant → Yard' };
+  const DIR_CUSTOMER = { v: 'Yard to Customer', t: 'Yard → Customer' };
+  function directionOpts(txnType) {
+    return txnType === 'Disposal' ? [DIR_PLANT] : [DIR_PLANT, DIR_CUSTOMER];
+  }
+  /* the direction column is spelled inconsistently in the live data
+     ("YardToCustomer" 302 rows, "Yard to Customer" 33) — strip spaces and
+     compare case-insensitively rather than trusting either spelling */
+  const sameDirection = (a, b) =>
+    String(a || '').replace(/\s+/g, '').toLowerCase() ===
+    String(b || '').replace(/\s+/g, '').toLowerCase();
+
+  /* ----------------------------------------------------------------------
+     Which letterheads a ticket may be printed on.
+
+     The second letterhead (Aqua World Export) represents a sale of RDF leaving
+     the yard, so it is offered ONLY for an RDF product moving Yard → Customer.
+     Every other ticket — a different product, or RDF still going Plant → Yard —
+     gets the operating company's letterhead alone, and the second one must not
+     be reachable at all.
+
+     Product is matched on the master's transaction type rather than its name,
+     so renaming or adding an RDF product in the Product master keeps working;
+     direction is matched with sameDirection() because the live column holds
+     both "YardToCustomer" and "Yard to Customer".
+     ---------------------------------------------------------------------- */
+  function slipCompanies(t, slipCfg) {
+    const all = (slipCfg && slipCfg.companies && slipCfg.companies.length)
+      ? slipCfg.companies : [DB.company.name];
+    if (all.length < 2) return all;
+    const prod = DB.map.product[t.productId];
+    const isRdf = !!prod && (prod.txnType === 'RDF' || t.type === 'RDF');
+    const toCustomer = sameDirection(t.direction, 'Yard to Customer');
+    return (isRdf && toCustomer) ? all : [all[0]];
+  }
+
+  /* Party Name defaults to the site's own operating company as a convenience.
+     It stays a normal editable field — RDF and Disposal tickets often carry a
+     different party, and the operator must be able to change or clear it. */
+  const DEFAULT_PARTY = 'CHENNAI BIOMINNING LTD';
+
   function resetTS() {
     Object.assign(TS, {
       mode: 'Double', weighType: 'Gross', txnType: 'Processing', direction: 'Plant to Yard',
       vehicleId: '', transporterId: '', productId: '', gateId: '', driverId: '',
-      cf: { cf1: '', cf2: '', cf3: '', cf4: '', cf5: wbNumber(), cf6: '' },
+      cf: { cf1: '', cf2: DEFAULT_PARTY, cf3: '', cf4: '', cf5: wbNumber(), cf6: '' },
       passes: [], recallOf: null, rid: genRid(), stable: false,
       ticketNo: Math.max.apply(null, DB.transactions.map(t => t.ticketNo)) + 1
     });
@@ -556,9 +607,21 @@
 
     /* ---- left: the legacy "Transaction Details" sheet ---- */
     left() {
+      /* "Lock fields after the first pass" now protects only the two fields
+         that are not metadata: the vehicle number plate (changing it would
+         re-point a half-finished weighment at a different truck) and the
+         transaction datetime (changing it would move a ticket into a different
+         reporting window after the fact).
+
+         Everything else — transporter, product, gate and the configurable
+         fields such as Vehicle Type, Party Name, Buyer Name and Package No —
+         stays editable while the closing weighment is captured, because those
+         are routinely corrected at the gross pass. Weights are never editable
+         here: they come from the indicator, and there is no manual entry. */
       const lock = locked();
-      const lockNote = lock ? U.callout('warn',
-        '<b>Fields locked.</b> The first weighment is recorded — under <i>Global settings → lock after first pass</i> only the weight can change now.') : '';
+      const lockNote = lock ? U.callout('info',
+        '<b>Weights and vehicle are fixed.</b> The first weighment is recorded, so the number plate and transaction datetime can no longer change ' +
+        '(<i>Global settings → lock after first pass</i>). Transporter, product, gate and the detail fields can still be corrected.') : '';
 
       const veh = DB.map.vehicle[TS.vehicleId];
       const vehicleField =
@@ -578,13 +641,16 @@
       // not on file yet can be added from the field itself ("＋ Add …" row).
       const masters = [
         vehicleField,
-        comboField({ key: 'transporter', id: 'transporter', label: 'Transporter', req: true, lock, placeholder: 'Search or add transporter…', value: TS.transporterId ? aName(TS.transporterId) : '' }),
-        comboField({ key: 'product', id: 'product', label: 'Product', req: true, lock, placeholder: 'Search or add product…', value: TS.productId ? pName(TS.productId) : '' }),
-        comboField({ key: 'gate', id: 'gate', label: 'Gate', req: true, lock, placeholder: 'Search or add gate…', value: gLabel(TS.gateId) }),
+        // metadata — editable even after the first pass (see lockNote above)
+        comboField({ key: 'transporter', id: 'transporter', label: 'Transporter', req: true, placeholder: 'Search or add transporter…', value: TS.transporterId ? aName(TS.transporterId) : '' }),
+        comboField({ key: 'product', id: 'product', label: 'Product', req: true, placeholder: 'Search or add product…', value: TS.productId ? pName(TS.productId) : '' }),
+        comboField({ key: 'gate', id: 'gate', label: 'Gate', req: true, placeholder: 'Search or add gate…', value: gLabel(TS.gateId) }),
         U.field({ label: 'Transaction Datetime', id: 'txnAt', type: 'datetime-local', value: U.fInput(DB.NOW), disabled: !DB.settings.enableTxnDateTime || lock })
       ];
+      // configurable fields (Vehicle Type, Party Name, Buyer Name, Package No …)
+      // are metadata too — never locked
       const cfs = DB.customFields.filter(f => f.visible).map(f => comboField({
-        key: f.key, id: f.key, label: f.label, req: f.required, maxLen: f.maxLen, lock,
+        key: f.key, id: f.key, label: f.label, req: f.required, maxLen: f.maxLen,
         placeholder: 'Search or add…', value: TS.cf[f.key] || ''
       }));
       const sheet = [];
@@ -609,7 +675,7 @@
                 U.seg('txnType', [{ v: 'Processing', t: 'Processing' }, { v: 'Disposal', t: 'Disposal' }, { v: 'RDF', t: 'RDF' }], TS.txnType) + '</div>' +
               (TS.txnType !== 'Processing'
                 ? '<div class="row"><div class="field__label termlbl">Direction</div>' +
-                  U.seg('direction', [{ v: 'Plant to Yard', t: 'Plant → Yard' }, { v: 'Yard to Customer', t: 'Yard → Customer' }], TS.direction) + '</div>'
+                  U.seg('direction', directionOpts(TS.txnType), TS.direction) + '</div>'
                 : '') +
               '<hr class="hr" style="margin:2px 0">' +
               '<div class="formgrid formgrid--2">' + sheet.join('') + '</div>' +
@@ -992,6 +1058,8 @@
           else if (key === 'weighType') { TS.weighType = v; TS.target = pickTarget(); }
           else if (key === 'txnType') {
             TS.txnType = v;
+            // a direction that this type does not offer must not survive the switch
+            if (!directionOpts(v).some(o => o.v === TS.direction)) TS.direction = DIR_PLANT.v;
             const pp = DB.map.product[TS.productId];
             if (pp && pp.txnType && pp.txnType !== 'All' && pp.txnType !== v) TS.productId = '';
             // a type with exactly one product (Processing → MSW) selects itself
@@ -2019,7 +2087,7 @@
 
     slip(t) {
       const slipCfg = (window.weighcore && window.weighcore.slipConfig && window.weighcore.slipConfig()) || null;
-      const companies = (slipCfg && slipCfg.companies && slipCfg.companies.length) ? slipCfg.companies : [DB.company.name];
+      const companies = slipCompanies(t, slipCfg);
       U.openModal(
         '<div class="modal__head"><div><div class="card__title">Weighment slip</div>' +
         '<div class="card__sub">Ticket #' + t.ticketNo + ' · ' + fDT(t.at) + '</div></div><div class="spacer"></div>' +

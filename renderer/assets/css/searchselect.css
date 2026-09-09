@@ -1,0 +1,27 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   searchselect.js — type-to-search for long <select> dropdowns.
+   Styled to match the existing .combo pattern used by the weighing form, so an
+   upgraded filter looks like the master fields operators already know.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.wcss { position: relative; display: block; }
+.wcss__input { width: 100%; cursor: text; }
+/* the original select stays in the DOM as the value holder — just never shown */
+.wcss__native { display: none !important; }
+
+.wcss__menu {
+  display: none; position: absolute; z-index: 120; left: 0; right: 0; top: calc(100% + 4px);
+  max-height: 264px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-md); box-shadow: var(--shadow-2); padding: 4px;
+}
+.wcss.is-open .wcss__menu { display: block; }
+
+.wcss__opt {
+  padding: 7px 9px; border-radius: var(--r-xs); cursor: pointer;
+  font-size: 13px; color: var(--text); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.wcss__opt:hover { background: var(--surface-3); }
+.wcss__opt.is-cursor { background: var(--brand-soft); color: var(--brand); }
+.wcss__opt.is-on { font-weight: 700; }
+.wcss__empty { padding: 10px; text-align: center; font-size: 12px; color: var(--text-3); }

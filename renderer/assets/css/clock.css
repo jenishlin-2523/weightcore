@@ -34,11 +34,19 @@
   display: flex; align-items: center; justify-content: center;
   gap: var(--sp-1); margin-bottom: var(--sp-3);
 }
+/* the digits are real inputs so any minute can be typed, not just dial steps */
 .wcclock__num {
-  font: 700 34px/1 var(--font-mono); padding: 2px 8px; border-radius: var(--r-sm);
-  background: transparent; border: 1px solid transparent; color: var(--text-3); cursor: pointer;
+  font: 700 34px/1 var(--font-mono); padding: 2px 6px; border-radius: var(--r-sm);
+  background: transparent; border: 1px solid transparent; color: var(--text-3);
+  cursor: text; width: 2.1em; text-align: center; -moz-appearance: textfield;
 }
+.wcclock__num::-webkit-outer-spin-button,
+.wcclock__num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.wcclock__num:focus { outline: none; }
 .wcclock__num.is-on { color: var(--brand); background: var(--brand-soft); border-color: var(--brand-line); }
+.wcclock__hint {
+  margin-top: var(--sp-3); text-align: center; font-size: 11px; color: var(--text-3);
+}
 .wcclock__colon { font: 700 30px/1 var(--font-mono); color: var(--text-3); }
 .wcclock__ap { display: flex; flex-direction: column; gap: 2px; margin-left: var(--sp-3); }
 .wcclock__apb {
@@ -79,3 +87,39 @@
 }
 
 .wcclock__foot { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-4); }
+
+/* ---- the date half: our own DD/MM/YYYY field + month calendar ----
+   The native <input type="date"> renders in the OS locale (MM/DD/YYYY here),
+   which is ambiguous on a weighment slip and cannot be forced per field. */
+.wcdt__date { text-align: left; cursor: pointer; font-variant-numeric: tabular-nums; font-weight: 600; }
+.wcdt__date:hover:not(:disabled) { border-color: var(--border-2); }
+.wcdt__date:disabled { cursor: not-allowed; opacity: .6; }
+
+.wccal {
+  position: fixed; z-index: 200; width: 268px; padding: var(--sp-3);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-3); user-select: none;
+  animation: wcclockIn .12s var(--ease-out);
+}
+.wccal__head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.wccal__title { flex: 1; text-align: center; font-weight: 700; font-size: 13px; color: var(--text); }
+.wccal__nav {
+  width: 28px; height: 28px; line-height: 1; font-size: 18px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2);
+  border-radius: var(--r-xs);
+}
+.wccal__nav:hover { border-color: var(--border-2); color: var(--text); }
+.wccal__dow, .wccal__grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.wccal__dow { margin-bottom: 2px; }
+.wccal__dow span { text-align: center; font-size: 10px; font-weight: 700; color: var(--text-3); }
+.wccal__d {
+  height: 32px; border: 1px solid transparent; background: transparent; cursor: pointer;
+  border-radius: var(--r-xs); font: 500 12px/1 var(--font-sans); color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.wccal__d:hover:not(.wccal__d--pad) { background: var(--surface-3); }
+.wccal__d--pad { cursor: default; }
+.wccal__d.is-today { border-color: var(--brand-line); color: var(--brand); font-weight: 700; }
+.wccal__d.is-on { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 700; }
+.wccal__foot { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); }
+.wccal__foot .spacer { flex: 1; }

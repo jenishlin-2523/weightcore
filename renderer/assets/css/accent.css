@@ -1,0 +1,76 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   accent.css — preset accent colours (accent.js).
+
+   Only the brand tokens are re-pointed; every component already draws from
+   them, so one attribute on <html> re-skins the whole app. The default
+   (no attribute) is the existing blue, untouched.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Teal */
+:root[data-accent="teal"] {
+  --brand:      #0f766e;
+  --brand-2:    #14918a;
+  --brand-soft: #e3f5f3;
+  --brand-line: #a8ded9;
+  --sel:        rgba(15, 118, 110, .10);
+}
+:root[data-theme="dark"][data-accent="teal"],
+:root[data-accent="teal"][data-theme="dark"] {
+  --brand:      #2dd4bf;
+  --brand-2:    #5eead4;
+  --brand-ink:  #04211e;
+  --brand-soft: #10322f;
+  --brand-line: #1c4f4a;
+}
+
+/* Indigo */
+:root[data-accent="indigo"] {
+  --brand:      #4f46e5;
+  --brand-2:    #6366f1;
+  --brand-soft: #eceafe;
+  --brand-line: #c7c2fb;
+  --sel:        rgba(79, 70, 229, .10);
+}
+:root[data-theme="dark"][data-accent="indigo"],
+:root[data-accent="indigo"][data-theme="dark"] {
+  --brand:      #818cf8;
+  --brand-2:    #a5b4fc;
+  --brand-ink:  #10102e;
+  --brand-soft: #1e1b4b;
+  --brand-line: #312e81;
+}
+
+/* Amber — deliberately darker than the swatch so white text stays readable */
+:root[data-accent="amber"] {
+  --brand:      #a16207;
+  --brand-2:    #ca8a04;
+  --brand-soft: #fdf3e0;
+  --brand-line: #f0d79b;
+  --sel:        rgba(161, 98, 7, .10);
+}
+:root[data-theme="dark"][data-accent="amber"],
+:root[data-accent="amber"][data-theme="dark"] {
+  --brand:      #fbbf24;
+  --brand-2:    #fcd34d;
+  --brand-ink:  #2a1c02;
+  --brand-soft: #382608;
+  --brand-line: #57400f;
+}
+
+/* the swatches in Settings */
+.accents { display: flex; gap: var(--sp-2); align-items: center; }
+.accent {
+  width: 30px; height: 30px; border-radius: 50%; cursor: pointer; padding: 0;
+  border: 2px solid var(--border-2); position: relative;
+}
+.accent:hover { transform: scale(1.06); }
+.accent.is-on { border-color: var(--text); }
+.accent.is-on::after {
+  content: ""; position: absolute; inset: 0; margin: auto;
+  width: 9px; height: 9px; border-radius: 50%; background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .25);
+}
+.accent--default { background: #1f4fd8; }
+.accent--teal    { background: #0f766e; }
+.accent--indigo  { background: #4f46e5; }
+.accent--amber   { background: #a16207; }

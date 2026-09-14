@@ -227,7 +227,12 @@
     return DB.transactions.filter(t => t.vehicleId === vehicleId && t.tare).slice(0, 12).reverse().map(t => t.tare);
   }
 
-  const MQ = { q: '', showInactive: true };
+  /* Retired rows stay in the table forever — a product a ticket references can
+   * never be deleted (FK_TransactionDetail_Product is NO_ACTION), so deactivating
+   * is the only way to retire one. Listing them by default buried the seven live
+   * products under twenty-six dead ones. Hidden by default, revealable, and the
+   * count line always says how many are being hidden so nothing is a surprise. */
+  const MQ = { q: '', showInactive: false };
 
   function masterView(key) {
     const def = MASTERS[key];
@@ -241,7 +246,7 @@
             '<button class="btn btn--primary" data-new>' + icon('plus') + esc(def.add) + '</button>'
         }) +
         '<div class="toolbar">' + U.searchBox('mq', 'Search ' + def.title.toLowerCase() + '…') +
-        '<label class="check"><input type="checkbox" id="mInactive" checked> Show inactive</label>' +
+        '<label class="check"><input type="checkbox" id="mInactive"' + (MQ.showInactive ? ' checked' : '') + '> Show inactive</label>' +
         '<div class="spacer"></div><span class="tiny dim" id="mCount"></span></div>' +
         '<div class="card" id="mCard"></div>';
       },
@@ -252,7 +257,11 @@
           const q = MQ.q.toLowerCase();
           rows = rows.filter(r => JSON.stringify(r).toLowerCase().includes(q));
         }
-        const c = U.$('#mCount'); if (c) c.textContent = rows.length + ' of ' + def.data().length + ' records';
+        const all = def.data();
+        const hidden = MQ.showInactive ? 0 : all.filter(r => r.active === false).length;
+        const c = U.$('#mCount');
+        if (c) c.textContent = rows.length + ' of ' + all.length + ' records' +
+          (hidden ? ' · ' + hidden + ' inactive hidden' : '');
         U.$('#mCard').innerHTML = U.table(
           def.cols.concat([{ label: '', w: '90px', get: r => '<button class="btn btn--sm btn--ghost" data-edit="' + r.id + '">' + icon('edit') + 'Edit</button>' }]),
           rows, { zebra: true, emptyTitle: 'No records', emptyMsg: 'Nothing matches this search.' });

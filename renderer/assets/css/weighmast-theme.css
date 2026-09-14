@@ -332,9 +332,27 @@ input[type="text"], input[type="search"], input[type="number"], input[type="date
   .edge__txt{ display:none; }
 }
 
-/* ---- tables: the ledger keeps a readable width and scrolls in its card ---- */
+/* ---- tables ---- */
 .tablewrap{ max-width:100%; }
-#txnCard .tbl{ min-width:920px; }
+
+/* The transactions ledger fits the screen instead of scrolling sideways.
+   It used to carry a min-width of 920px, which overflowed the 844px content
+   area of a 1152-wide terminal and forced a horizontal scrollbar. The column
+   widths in views-ops.js are percentages, and table-layout:fixed makes the
+   table honour them against whatever width it is given, so it can never
+   exceed its card. Long values WRAP rather than truncate — the row grows a
+   little instead of hiding a vehicle number or a transporter name. */
+#txnCard .tbl{ table-layout:fixed; width:100%; font-size:12.3px; }
+#txnCard .tbl th,
+#txnCard .tbl td{ padding:8px 7px; }
+#txnCard .tbl thead th{ white-space:normal; letter-spacing:.03em; }
+#txnCard .tbl tbody td{ overflow-wrap:anywhere; }
+#txnCard .tbl .num{ white-space:nowrap; }            /* keep figures on one line */
+#txnCard .cellstack b,
+#txnCard .cellstack span{ overflow-wrap:anywhere; }
+/* badges cannot wrap, so they set the minimum width of the Type and Status
+   columns — trim them here so those two columns stay narrow */
+#txnCard .badge{ white-space:nowrap; font-size:10.4px; padding:2px 7px; }
 
 /* ==========================================================================
    Searchable master combos on the Transaction Details sheet — every field is

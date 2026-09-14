@@ -388,6 +388,18 @@ const MASTERS_SQL = {
     StopBits: NS(String(f.stopBits || '')), IsActive: f.active === false ? 0 : 1 }) }
 };
 
+/* wb-sync.ps1 merges masters into the central list by a NATURAL KEY rather than by
+ * id — Product by ProductName, Gate by GateName. A second row with the same name
+ * is therefore not a harmless extra: on push both rows collapse onto the same
+ * central row, and locally every picker shows the name twice. That is exactly how
+ * this bridge accumulated five "MSW" rows and three "RDF" rows, because the insert
+ * below never checked. The keys here mirror wb-sync.ps1's own natural keys.
+ *
+ * Scoped to the two masters the operator maintains by hand. Vehicles and accounts
+ * are left alone deliberately: they may already hold same-name rows, and refusing
+ * an edit on one of those would be worse than the duplicate. */
+const NAT_COL = { products: 'ProductName', gates: 'GateName' };
+
 /**
  * Insert or update one master record. { entity, id (numeric PK or null), fields }.
  * Returns { ok, id } — for inserts, id is the new IDENTITY value.
@@ -397,6 +409,23 @@ async function saveMaster(cfg, { entity, id, fields }) {
   if (!def) return { ok: false, error: 'no SQL mapping for "' + entity + '"' };
   const cols = def.map(fields || {});
   if (entity === 'products' && !(await hasCol(cfg, 'Product', 'TransactionType'))) delete cols.TransactionType;
+
+  // refuse a name that already exists (case- and padding-insensitive), ignoring the row being edited
+  const nat = NAT_COL[entity];
+  if (nat && cols[nat] !== undefined) {
+    const dupSql = `SELECT ISNULL((SELECT TOP 1 ${def.pk} FROM ${def.table} ` +
+      `WHERE LTRIM(RTRIM(${nat})) = LTRIM(RTRIM(${cols[nat]}))` +
+      (id ? ` AND ${def.pk} <> ${num(id)}` : '') + '), 0)';
+    const dupOut = await runPayload(cfg, { mode: 'scalar', sql: dupSql }, 15000);
+    const dm = /OK:(-?\d+)/.exec(dupOut || '');
+    if (!dm) return { ok: false, error: 'could not check for a duplicate name' };
+    if (parseInt(dm[1], 10) > 0) {
+      const shown = String((fields || {}).name || '').trim();
+      return { ok: false, error: 'A ' + entity.replace(/s$/, '') + ' named "' + shown +
+        '" already exists (id ' + dm[1] + '). Rename it, or reactivate the existing one instead of adding a second.' };
+    }
+  }
+
   const keys = Object.keys(cols);
   const sql = id
     ? `UPDATE ${def.table} SET ` + keys.map((k) => `${k}=${cols[k]}`).join(',') + ` WHERE ${def.pk}=${num(id)}; SELECT ${num(id)}`

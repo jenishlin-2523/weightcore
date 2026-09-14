@@ -714,14 +714,20 @@
         vehicleField,
         // metadata — editable even after the first pass (see lockNote above)
         comboField({ key: 'transporter', id: 'transporter', label: 'Transporter', req: true, placeholder: 'Search or add transporter…', value: TS.transporterId ? aName(TS.transporterId) : '' }),
-        comboField({ key: 'product', id: 'product', label: 'Product', req: true, placeholder: 'Search or add product…', value: TS.productId ? pName(TS.productId) : '' }),
-        // free-text material, only while Disposal + OTHER is selected
-        (isOtherProduct()
-          ? '<div class="field"><label class="field__label" for="otherProd">Enter Details<span class="req">*</span></label>' +
-            '<input class="input" id="otherProd" autocomplete="off" spellcheck="false" maxlength="60"' +
-            ' placeholder="Type the material, e.g. Coconut Shell" value="' + esc(TS.otherProduct || '') + '">' +
-            '<div class="field__hint">Saved on this ticket only — it is never added to the Product master.</div></div>'
-          : ''),
+        // Product, and directly beneath it the free-text material box shown only
+        // for Disposal + OTHER. Both share ONE grid cell on purpose: as separate
+        // cells the box landed in the next row of the left column, reading as if
+        // it belonged to whichever custom field sat beside it (Buyer Name), and
+        // it pushed Gate and Datetime down a row each time OTHER was picked.
+        '<div>' +
+          comboField({ key: 'product', id: 'product', label: 'Product', req: true, placeholder: 'Search or add product…', value: TS.productId ? pName(TS.productId) : '' }) +
+          (isOtherProduct()
+            ? '<div class="field" style="margin-top:var(--sp-3)"><label class="field__label" for="otherProd">Enter Details<span class="req">*</span></label>' +
+              '<input class="input" id="otherProd" autocomplete="off" spellcheck="false" maxlength="60"' +
+              ' placeholder="Type the material, e.g. Coconut Shell" value="' + esc(TS.otherProduct || '') + '">' +
+              '<div class="field__hint">Saved on this ticket only — it is never added to the Product master.</div></div>'
+            : '') +
+        '</div>',
         comboField({ key: 'gate', id: 'gate', label: 'Gate', req: true, placeholder: 'Search or add gate…', value: gLabel(TS.gateId) }),
         U.field({ label: 'Transaction Datetime', id: 'txnAt', type: 'datetime-local', value: U.fInput(DB.NOW), disabled: !DB.settings.enableTxnDateTime || lock })
       ];
@@ -1844,15 +1850,19 @@
       U.$('#txnCount').innerHTML = num(all.length) + ' tickets · ' + mt(totalNet, 2) + ' MT net';
       U.$('#txnCard').innerHTML =
         U.table([
-          { label: 'Ticket', w: '96px', get: t => '<b class="mono">' + t.ticketNo + '</b>' + (t.manual ? ' <span class="tag" title="Contains a manually entered weight">✱</span>' : '') },
-          { label: 'Date / time', w: '150px', get: t => '<div class="cellstack"><b>' + fDate(t.at) + '</b><span>' + fTime(t.at) + ' · ' + esc((DB.map.wb[t.wbId] || {}).name || '—') + '</span></div>' },
-          { label: 'Vehicle', get: t => '<div class="cellstack"><b>' + esc(vName(t.vehicleId)) + '</b><span>' + esc(aName(t.transporterId)) + '</span></div>' },
-          { label: 'Product', get: t => '<div class="cellstack"><b>' + esc(prodOf(t)) + '</b><span>' + esc(t.mode) + (t.direction ? ' · ' + esc(t.direction) : '') + '</span></div>' },
-          { label: 'Type', get: t => U.typeBadge(t.type) },
-          { label: 'Tare', num: true, get: t => t.tare != null ? num(t.tare) : '<span class="dim">—</span>' },
-          { label: 'Gross', num: true, get: t => t.gross != null ? num(t.gross) : '<span class="dim">—</span>' },
-          { label: 'Net (kg)', num: true, get: t => t.net != null ? '<b>' + num(t.net) + '</b>' : '<span class="dim">pending</span>' },
-          { label: 'Status', get: t => t.deleted
+          // Widths are percentages, not pixels: with table-layout:fixed they make
+          // the ledger fit any screen instead of forcing a horizontal scrollbar.
+          // Type and Status need the most room because they hold badges, which
+          // cannot wrap; the numeric columns need the least.
+          { label: 'Ticket', w: '9%', get: t => '<b class="mono">' + t.ticketNo + '</b>' + (t.manual ? ' <span class="tag" title="Contains a manually entered weight">✱</span>' : '') },
+          { label: 'Date / time', w: '14%', get: t => '<div class="cellstack"><b>' + fDate(t.at) + '</b><span>' + fTime(t.at) + ' · ' + esc((DB.map.wb[t.wbId] || {}).name || '—') + '</span></div>' },
+          { label: 'Vehicle', w: '14.5%', get: t => '<div class="cellstack"><b>' + esc(vName(t.vehicleId)) + '</b><span>' + esc(aName(t.transporterId)) + '</span></div>' },
+          { label: 'Product', w: '14%', get: t => '<div class="cellstack"><b>' + esc(prodOf(t)) + '</b><span>' + esc(t.mode) + (t.direction ? ' · ' + esc(t.direction) : '') + '</span></div>' },
+          { label: 'Type', w: '11%', get: t => U.typeBadge(t.type) },
+          { label: 'Tare', w: '8%', num: true, get: t => t.tare != null ? num(t.tare) : '<span class="dim">—</span>' },
+          { label: 'Gross', w: '8%', num: true, get: t => t.gross != null ? num(t.gross) : '<span class="dim">—</span>' },
+          { label: 'Net (kg)', w: '9%', num: true, get: t => t.net != null ? '<b>' + num(t.net) + '</b>' : '<span class="dim">pending</span>' },
+          { label: 'Status', w: '12.5%', get: t => t.deleted
             ? '<div class="cellstack"><span class="badge badge--danger">Deleted</span>' +
               '<span title="' + U.esc(t.deleted.reason) + '">' + U.esc(t.deleted.by) + ' · ' + fDate(t.deleted.at) + '</span></div>'
             : U.statusBadge(t.status) }

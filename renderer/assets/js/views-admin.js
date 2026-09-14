@@ -9,10 +9,26 @@
 
   const aName = (id) => (DB.map.account[id] || {}).name || '—';
   const pName = (id) => (DB.map.product[id] || {}).name || '—';
+  /* A ticket's product name. Normally the master row wins, but a ticket raised
+     through the Disposal "OTHER" flow has NO ProductID at all — its material is
+     free text stored on the weighment row itself — so fall back to that. Also
+     covers a ticket whose master row was deleted. */
+  const prodOf = (t) => {
+    if (!t) return '—';
+    const m = DB.map.product[t.productId];
+    if (m && m.name) return m.name;
+    return (t.productName && String(t.productName).trim()) || '—';
+  };
   const vName = (id) => (DB.map.vehicle[id] || {}).no || '—';
 
   /* Master entities persisted to the live SQL DB, with their app-id prefixes. */
   const SQL_MASTERS = { vehicles: 'V', accounts: 'A', drivers: 'D', products: 'P', gates: 'G', units: 'U', weighbridges: 'WB' };
+  /* Masters that offer a hard Delete. Kept to these two deliberately: they are
+     the ones the site curates, and both are protected by a NO_ACTION foreign
+     key from TransactionDetail, so a row in use simply cannot be removed.
+     Everything else retires by Deactivate only. Must match DELETABLE in
+     src/sqldb.js, which is what actually enforces it. */
+  const DELETABLE_MASTERS = { products: 1, gates: 1 };
   const MAP_KEY = { vehicles: 'vehicle', accounts: 'account', drivers: 'driver', products: 'product', gates: 'gate', locations: 'site', units: 'unit', weighbridges: 'wb', cameras: 'cam' };
   const sqlIdOf = (id, pre) => { const m = new RegExp('^' + pre + '(\\d+)$').exec(String(id || '')); return m ? parseInt(m[1], 10) : null; };
   const in14 = (t) => t.at && (DB.NOW - t.at) < 14 * 864e5;
@@ -298,6 +314,10 @@
       '<div class="modal__foot"><button class="btn btn--primary" id="mSave">' + icon('save') + 'Save</button>' +
       '<button class="btn" data-close>Cancel</button>' +
       (isNew ? '' : '<div class="spacer"></div><button class="btn btn--danger" id="mToggle">' + icon('ban') + (rec.active === false ? 'Reactivate' : 'Deactivate') + '</button>') +
+      // Delete exists only for products and gates, and only the database can
+      // say whether it is allowed — a row any ticket references is refused.
+      (!isNew && DELETABLE_MASTERS[key]
+        ? '<button class="btn btn--danger" id="mDelete">' + icon('trash') + 'Delete</button>' : '') +
       '</div>', true);
 
     U.$('#mSave').addEventListener('click', () => {
@@ -362,7 +382,71 @@
         }).catch(function () { U.toast('danger', 'Database update failed', 'Status changed on screen only.'); });
       }
       U.closeModal(); after();
-      U.toast('warn', rec.active ? 'Reactivated' : 'Deactivated', 'Record kept — WeighCore never hard-deletes master data.');
+      U.toast('warn', rec.active ? 'Reactivated' : 'Deactivated',
+        'Record kept, and every ticket that used it is unaffected.');
+    });
+
+    /* ----------------------------------------------------------------------
+       Delete — products and gates only.
+
+       A row that any ticket references cannot go: TransactionDetail carries
+       FK_TransactionDetail_Product and FK_TransactionDetail_Gate (NO_ACTION),
+       so the database refuses it outright. sqldb.deleteMaster counts the
+       references in the same statement as the delete and reports back, so the
+       operator is told how many tickets use it rather than seeing a constraint
+       error — and is pointed at Deactivate, which always works.
+       ---------------------------------------------------------------------- */
+    const del = U.$('#mDelete');
+    if (del) del.addEventListener('click', () => {
+      const label = rec.name || rec.no || rec.code || 'this record';
+      const pre = SQL_MASTERS[key];
+      const idNum = pre ? sqlIdOf(rec.id, pre) : null;
+      const wc = window.weighcore;
+      if (!(pre && idNum && wc && wc.data && wc.data.deleteMaster)) {
+        U.toast('danger', 'Not available', 'Deleting needs the desktop build with the database backend.');
+        return;
+      }
+      U.openModal(
+        '<div class="modal__head"><div><div class="card__title">Delete ' + esc(label) + '?</div>' +
+        '<div class="card__sub">' + esc(def.title) + '</div></div>' +
+        '<div class="spacer"></div><button class="iconbtn" data-close>' + icon('x') + '</button></div>' +
+        '<div class="modal__body">' +
+        U.callout('warn', '<b>This removes the record permanently.</b> It is only possible while no ticket uses it — ' +
+          'if any weighment already references it the database will refuse, and you should <b>Deactivate</b> instead, ' +
+          'which hides it everywhere while leaving those tickets intact.') +
+        '</div>' +
+        '<div class="modal__foot"><button class="btn btn--danger" id="delMasterGo">' + icon('trash') + 'Delete permanently</button>' +
+        '<button class="btn" data-close>Cancel</button></div>');
+
+      U.$('#delMasterGo').addEventListener('click', () => {
+        const go = U.$('#delMasterGo');
+        go.disabled = true; go.textContent = 'Deleting…';
+        wc.data.deleteMaster({ entity: key, id: idNum }).then(function (r) {
+          if (r && r.ok) {
+            const arr = def.data(); const i = arr.indexOf(rec);
+            if (i >= 0) arr.splice(i, 1);
+            const mk = MAP_KEY[key]; if (DB.map[mk]) delete DB.map[mk][rec.id];
+            DB.audit.unshift({
+              id: 'AUX' + Date.now(), table: def.title, op: 'DELETE', at: new Date(),
+              user: ((window.AUTH || {}).user || {}).username || 'admin',
+              text: def.title.replace(/s$/, '') + ' "' + esc(label) + '" deleted', ref: null
+            });
+            U.closeModal(); U.closeModal(); after();
+            U.toast('ok', 'Deleted', esc(label) + ' has been removed from the master.');
+          } else if (r && r.inUse) {
+            U.closeModal();
+            U.toast('danger', 'Cannot delete — still in use',
+              esc(label) + ' is referenced by ' + r.inUse + ' weighment row' + (r.inUse === 1 ? '' : 's') +
+              '. Use Deactivate instead — it disappears from every dropdown and those tickets keep their data.');
+          } else {
+            go.disabled = false; go.textContent = 'Delete permanently';
+            U.toast('danger', 'Delete failed', ((r && r.error) || 'unknown error') + ' — nothing was changed.');
+          }
+        }).catch(function (e) {
+          go.disabled = false; go.textContent = 'Delete permanently';
+          U.toast('danger', 'Delete failed', String((e && e.message) || e) + ' — nothing was changed.');
+        });
+      });
     });
   }
 
@@ -414,6 +498,77 @@
      The old code padded RQ.to to :59.999 and compared <=, so 02:00-03:00 and
      03:00-04:00 both claimed 03:00:00-03:00:59.
      ---------------------------------------------------------------------- */
+  /* ----------------------------------------------------------------------
+     Transaction Type -> Product cascade, matching the ERP's Transactions
+     report filter.
+
+       Processing -> product is MSW, no choice offered
+       Disposal   -> choose from INERT / BIO EARTH / WOOD / TYRE / OTHER
+       RDF        -> product is RDF, and a Direction filter appears
+
+     Names are compared with spacing and case stripped, because the same
+     material is spelled several ways across the master and the central sync
+     keeps introducing more ("Tyres" vs "TYRE", "bio earth" vs "BIO EARTH").
+     Matching on the NAME rather than the ProductID is deliberate: it keeps
+     working across the id churn the name-keyed sync causes.
+
+     OTHER is an EXCLUSION match, not a lookup of the "OTHER" master row. A
+     Disposal ticket counts as OTHER when its product is none of the six known
+     materials — which catches both future free-text OTHER tickets and every
+     historical oddity (STONE, LEACHATE, "bio earth internal use", "STONE
+     INERTNAL USE"…) without renaming any of them. The "OTHER" master row
+     exists only to drive the free-text ticket-entry flow.
+     ---------------------------------------------------------------------- */
+  const normName = (v) => String(v == null ? '' : v).replace(/\s+/g, '').toUpperCase();
+  const DISPOSAL_PRODUCTS = ['INERT', 'BIO EARTH', 'WOOD', 'TYRE'];
+  const OTHER_LABEL = 'OTHER';
+  // every material that is NOT "other" once a ticket is Disposal
+  const KNOWN_MATERIALS = ['MSW', 'RDF'].concat(DISPOSAL_PRODUCTS).map(normName);
+  const FORCED_PRODUCT = { Processing: 'MSW', RDF: 'RDF' };
+  const DIRECTIONS = ['Plant to Yard', 'Yard to Customer'];
+  /* the live column holds both "YardToCustomer" and "Yard to Customer" */
+  const sameDir = (a, b) => normName(a) === normName(b);
+
+  /* does this ticket satisfy the product half of the cascade? */
+  function productMatches(t) {
+    const name = prodOf(t);
+    const forced = FORCED_PRODUCT[RQ.type];
+    if (forced) return normName(name) === normName(forced);
+    if (RQ.type === 'Disposal') {
+      // "All disposal products" is the union of the five categories, so it still
+      // excludes MSW and RDF — a Disposal-typed ticket carrying one of those is a
+      // mis-typed ticket, not a disposal material, and must not inflate the total.
+      if (!RQ.product) return ['MSW', 'RDF'].indexOf(normName(name)) < 0;
+      if (RQ.product === OTHER_LABEL) return KNOWN_MATERIALS.indexOf(normName(name)) < 0;
+      return normName(name) === normName(RQ.product);
+    }
+    // "All types": fall back to the ordinary master-id picker
+    return !RQ.product || t.productId === RQ.product;
+  }
+
+  /* The Product control itself, which changes shape with the Transaction Type.
+     Processing/RDF render a disabled select showing the fixed material, so the
+     operator can see the constraint rather than wondering where the field went. */
+  /* Its own option builder: the render function's local `opt` is not in scope
+     here, and reaching for it silently blanked the whole Reports screen. */
+  const optHtml = (arr, val, blank) => '<option value="">' + blank + '</option>' +
+    arr.map(o => '<option value="' + esc(o.v) + '"' + (o.v === val ? ' selected' : '') + '>' + esc(o.t) + '</option>').join('');
+
+  function productFilterControl() {
+    const forced = FORCED_PRODUCT[RQ.type];
+    if (forced) {
+      return '<select class="input" id="rProduct" disabled><option>' + esc(forced) + '</option></select>' +
+        '<div class="field__hint">Fixed by Transaction Type = ' + esc(RQ.type) + '</div>';
+    }
+    if (RQ.type === 'Disposal') {
+      const opts = DISPOSAL_PRODUCTS.concat([OTHER_LABEL]).map(v => ({ v, t: v }));
+      return '<select class="input" id="rProduct">' + optHtml(opts, RQ.product, 'All disposal products') + '</select>' +
+        '<div class="field__hint">OTHER covers any material outside the five</div>';
+    }
+    return '<select class="input" id="rProduct">' +
+      optHtml(DB.products.map(p => ({ v: p.id, t: p.name })), RQ.product, 'All products') + '</select>';
+  }
+
   const MINUTE_MS = 60000;
   const floorToMinute = (d) => { const x = new Date(d); x.setSeconds(0, 0); return x; };
   const rangeStart = () => floorToMinute(RQ.from);
@@ -425,6 +580,8 @@
     from: new Date(DB.NOW.getTime() - 6 * 864e5), to: DB.NOW,
     type: '', status: 'Complete', mode: '', product: '', transporter: '', vehicle: '',
     site: '', cf1: '', cf3: '', cf4: '', out: 'summary', ran: false,
+    // only meaningful under Transaction Type = RDF; the control is hidden otherwise
+    direction: '',
     // true while the range came from a quick-range pill (or the 7-day default),
     // i.e. a whole-day span. The hourly ledger is only meaningful once the
     // operator has actually chosen times, so editing either From/To clears it.
@@ -445,14 +602,14 @@
       '<div id="rBody">' + (tab === 'master' ? this.master() : tab === 'reconcile' ? this.reconcile() : this.transaction()) + '</div>';
     },
 
-    transaction() {
+    /* The filter fields, on their own so changing Transaction Type can redraw
+       JUST this block. Re-rendering the whole view instead sent the page back to
+       the top on every change, which made the rest of the form awkward to use. */
+    filterBody() {
       const f = (label, html) => '<div class="field">' + '<div class="field__label">' + label + '</div>' + html + '</div>';
       const opt = (arr, val, blank) => '<option value="">' + blank + '</option>' +
         arr.map(o => '<option value="' + esc(o.v) + '"' + (o.v === val ? ' selected' : '') + '>' + esc(o.t) + '</option>').join('');
-      return U.card({
-        title: 'Filter', sub: 'Every field the legacy report offered, plus site and operator scoping',
-        actions: '<button class="btn btn--sm" id="rReset">Reset</button>',
-        body:
+      return '' +
           '<fieldset class="fieldset"><legend class="fieldset__legend">Period</legend><div class="formgrid">' +
             U.field({ label: 'From', id: 'rFrom', type: 'datetime-local', value: U.fInput(RQ.from) }) +
             U.field({ label: 'To', id: 'rTo', type: 'datetime-local', value: U.fInput(RQ.to) }) +
@@ -462,12 +619,22 @@
           '</div></fieldset>' +
           '<fieldset class="fieldset" style="margin-top:var(--sp-5)"><legend class="fieldset__legend">Transaction</legend><div class="formgrid">' +
             f('Status', '<select class="input" id="rStatus">' + opt([{ v: 'Complete', t: 'Complete' }, { v: 'Active', t: 'On the bridge' }, { v: 'Void', t: 'Void' }], RQ.status, 'All statuses') + '</select>') +
-            f('Type', '<select class="input" id="rType">' + opt(['Processing', 'Disposal', 'RDF'].map(v => ({ v, t: v })), RQ.type, 'All types') + '</select>') +
+            f('Transaction Type', '<select class="input" id="rType">' + opt(['Processing', 'Disposal', 'RDF'].map(v => ({ v, t: v })), RQ.type, 'All types') + '</select>') +
+            // Direction only exists for RDF — an RDF load either moves inside the
+            // site or is sold out of the yard. Hidden for every other type.
+            (RQ.type === 'RDF'
+              ? f('Direction', '<select class="input" id="rDirection">' +
+                  opt(DIRECTIONS.map(v => ({ v, t: v })), RQ.direction, 'All directions') + '</select>')
+              : '') +
             f('Mode', '<select class="input" id="rMode">' + opt(['Single', 'Double', 'Multi'].map(v => ({ v, t: v })), RQ.mode, 'All modes') + '</select>') +
             f('Site', '<select class="input" id="rSite">' + opt(DB.sites.map(s => ({ v: s.id, t: s.code })), RQ.site, 'All sites') + '</select>') +
           '</div></fieldset>' +
           '<fieldset class="fieldset" style="margin-top:var(--sp-5)"><legend class="fieldset__legend">Master data</legend><div class="formgrid">' +
-            f('Product', '<select class="input" id="rProduct">' + opt(DB.products.map(p => ({ v: p.id, t: p.name })), RQ.product, 'All products') + '</select>') +
+            // The Product control follows the Transaction Type, mirroring the ERP:
+            // Processing and RDF fix it (shown locked so the operator can see what
+            // is being applied), Disposal narrows it to the canonical five, and
+            // "All types" leaves the ordinary full picker alone.
+            f('Product', productFilterControl()) +
             f('Transporter', '<select class="input" id="rTransporter">' + opt(DB.accounts.filter(a => a.isTransporter).map(a => ({ v: a.id, t: a.name })), RQ.transporter, 'All transporters') + '</select>') +
             f('Vehicle', '<select class="input" id="rVehicle">' + opt(DB.vehicles.map(v => ({ v: v.id, t: v.no })), RQ.vehicle, 'All vehicles') + '</select>') +
           '</div></fieldset>' +
@@ -480,7 +647,15 @@
           '<div class="row">' + U.seg('out', [{ v: 'summary', t: 'Summary' }, { v: 'detail', t: 'Detail' }], RQ.out, 'seg--brand') +
           '<span class="tiny dim">Summary groups by product and transporter · Detail lists every ticket</span>' +
           '<div class="spacer"></div>' +
-          '<button class="btn btn--primary" id="rRun">' + icon('filter') + 'Run report</button></div>'
+          '<button class="btn btn--primary" id="rRun">' + icon('filter') + 'Run report</button></div>';
+    },
+
+    transaction() {
+      return U.card({
+        title: 'Filter', sub: 'Every field the legacy report offered, plus site and operator scoping',
+        actions: '<button class="btn btn--sm" id="rReset">Reset</button>',
+        // wrapped so a Transaction Type change can replace only this
+        body: '<div id="rFilterBody">' + this.filterBody() + '</div>'
       }) + '<div id="rOut" style="margin-top:var(--sp-4)">' + (RQ.ran ? this.output() : '') + '</div>';
     },
 
@@ -494,9 +669,14 @@
         if (!eff || !inRange(eff, lo, hi)) return false;
         if (RQ.status && t.status !== RQ.status) return false;
         if (RQ.type && t.type !== RQ.type) return false;
+        if (!productMatches(t)) return false;
+        // Direction only narrows anything under RDF, where the control exists
+        if (RQ.type === 'RDF' && RQ.direction && !sameDir(t.direction, RQ.direction)) return false;
         if (RQ.mode && t.mode !== RQ.mode) return false;
         if (RQ.site && t.siteId !== RQ.site) return false;
-        if (RQ.product && t.productId !== RQ.product) return false;
+        // product is decided solely by productMatches() above — the old
+        // id-equality test here fought the cascade (under Processing the locked
+        // control yields RQ.product = "MSW", which no ProductID ever equals)
         if (RQ.transporter && t.transporterId !== RQ.transporter) return false;
         if (RQ.vehicle && t.vehicleId !== RQ.vehicle) return false;
         if (RQ.cf1 && U.norm(t.cf.cf1) !== U.norm(RQ.cf1)) return false;
@@ -506,10 +686,40 @@
       });
     },
 
+    /* How many tickets the forced Product rule kept out.
+
+       Under Processing or RDF the product is fixed, so a ticket carrying the
+       right Transaction Type but a different material is deliberately left out
+       of the category total — a mis-typed ticket should not pollute the number
+       an auditor reads. It must not vanish silently though, so the count is
+       surfaced under the report and the ticket is still reachable under
+       "All types". Returns 0 when nothing is being forced. */
+    mismatchCount() {
+      if (!FORCED_PRODUCT[RQ.type]) return 0;
+      const lo = rangeStart(), hi = rangeEndExclusive();
+      let n = 0;
+      DB.transactions.forEach((t) => {
+        const eff = effectiveAt(t);
+        if (!eff || !inRange(eff, lo, hi)) return;
+        if (t.type !== RQ.type) return;
+        if (RQ.status && t.status !== RQ.status) return;
+        if (!productMatches(t)) n++;                       // right type, wrong material
+      });
+      return n;
+    },
+
     output() {
       const rows = this.rows();
+      const missed = this.mismatchCount();
+      const missNote = missed
+        ? '<div class="callout callout--warn" style="margin-bottom:var(--sp-4)">' +
+          '<b>' + num(missed) + ' ticket' + (missed === 1 ? '' : 's') + ' excluded</b> — Transaction Type is ' +
+          esc(RQ.type) + ' but the product is not ' + esc(FORCED_PRODUCT[RQ.type]) +
+          '. Nothing was deleted; switch Transaction Type to <b>All types</b> to see them.</div>'
+        : '';
       const net = rows.reduce((n, t) => n + (t.net || 0), 0);
-      const head = '<div class="grid grid--kpi" style="margin-bottom:var(--sp-4)">' +
+      // the note sits above the figures, in BOTH summary and detail modes
+      const head = missNote + '<div class="grid grid--kpi" style="margin-bottom:var(--sp-4)">' +
         U.kpi({ label: 'Tickets', value: num(rows.length) }) +
         U.kpi({ label: 'Net weight', value: mt(net, 3), unit: 'MT', color: 'var(--ok)' }) +
         U.kpi({ label: 'Avg net / ticket', value: mt(rows.length ? net / rows.length : 0, 3), unit: 'MT', color: 'var(--info)' }) +
@@ -520,7 +730,7 @@
         const grp = {};
         rows.forEach(t => {
           const k = t.productId + '|' + t.transporterId;
-          grp[k] = grp[k] || { product: pName(t.productId), transporter: aName(t.transporterId), n: 0, net: 0, charges: 0 };
+          grp[k] = grp[k] || { product: prodOf(t), transporter: aName(t.transporterId), n: 0, net: 0, charges: 0 };
           grp[k].n++; grp[k].net += t.net || 0; grp[k].charges += t.charges || 0;
         });
         const list = Object.values(grp).sort((a, b) => b.net - a.net);
@@ -549,7 +759,7 @@
           { label: 'Vehicle', get: t => esc(vName(t.vehicleId)) },
           { label: 'Vehicle type', get: t => esc(t.cf.cf1 || '—') },
           { label: 'Transporter', get: t => esc(aName(t.transporterId)) },
-          { label: 'Material', get: t => esc(pName(t.productId)) },
+          { label: 'Material', get: t => esc(prodOf(t)) },
           { label: 'Type', get: t => esc(t.type) },
           { label: 'Empty (MT)', num: true, get: t => t.tare != null ? mt(t.tare, 3) : '—' },
           { label: 'Loaded (MT)', num: true, get: t => t.gross != null ? mt(t.gross, 3) : '—' },
@@ -646,7 +856,7 @@
         // columns 6/8/9 (weights) are right-aligned everywhere they render
         rightCols: [6, 8, 9],
         rows: rows.map(t => [
-          String(t.ticketNo), vName(t.vehicleId), pName(t.productId),
+          String(t.ticketNo), vName(t.vehicleId), prodOf(t),
           (DB.map.wb[t.wbId] || {}).name || '', t.type,
           t.grossAt ? fT12(t.grossAt) : '', kgv(t.gross),
           t.tareAt ? fT12(t.tareAt) : '', kgv(t.tare), kgv(t.net)
@@ -806,6 +1016,20 @@
       // which is what turns the hourly ledger on
       root.addEventListener('change', (e) => {
         if (e.target && (e.target.id === 'rFrom' || e.target.id === 'rTo')) RQ.wholeDay = false;
+        // Transaction Type reshapes the Product control and shows/hides Direction,
+        // so the panel is rebuilt. A product or direction chosen under the previous
+        // type is dropped rather than silently carried into the new one.
+        if (e.target && e.target.id === 'rType') {
+          RQ.type = e.target.value;
+          RQ.product = ''; RQ.direction = '';
+          // Replace ONLY the filter fields. A full ROUTER.render() rebuilt the
+          // whole page and threw the operator back to the top on every type
+          // change, making the fields below hard to reach. Click/change handlers
+          // are delegated from root, so nothing needs re-binding.
+          const body = U.$('#rFilterBody');
+          if (body) body.innerHTML = self.filterBody(); else window.ROUTER.render();
+          return;
+        }
       });
       root.addEventListener('click', (e) => {
         const tb = e.target.closest('[data-rtab]');
@@ -830,7 +1054,7 @@
           // exclusive bound — instead of padding the stored value to :59.999,
           // which used to make consecutive windows overlap.
           RQ.from = floorToMinute(RQ.from); RQ.to = floorToMinute(RQ.to);
-          ['Status', 'Type', 'Mode', 'Site', 'Product', 'Transporter', 'Vehicle', 'Cf1', 'Cf3', 'Cf4'].forEach(k => {
+          ['Status', 'Type', 'Mode', 'Site', 'Product', 'Transporter', 'Vehicle', 'Cf1', 'Cf3', 'Cf4', 'Direction'].forEach(k => {
             const el = U.$('#r' + k); if (el) RQ[k.charAt(0).toLowerCase() + k.slice(1)] = el.value;
           });
           RQ.ran = true;

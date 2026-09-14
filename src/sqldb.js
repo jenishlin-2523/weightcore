@@ -169,6 +169,13 @@ function transform(raw, camCfg) {
     const net = num(last.NetWeight) || ((gross != null && tare != null) ? gross - tare : null);
     const gp = ds.filter((d) => num(d.GrossWeight)).pop(), tp = ds.filter((d) => num(d.TareWeight)).pop();
     const prodId = (ds.find((d) => d.ProductID) || {}).ProductID, gateId = (ds.find((d) => d.GateID) || {}).GateID;
+    /* TransactionDetail stores the product NAME alongside the id. A ticket
+     * raised through the Disposal "OTHER" flow carries a free-text material
+     * with NO ProductID at all, so the name on the row is the only record of
+     * what was weighed — surface it so the slip, the ticket list and the report
+     * filter can all see it. For an ordinary ticket the master name wins and
+     * this is just a fallback. */
+    const prodName = s((ds.find((d) => s(d.ProductName)) || {}).ProductName);
     return {
       id: 'T' + t.TicketID, ticketNo: num(t.TicketID), status: normStatus(t.Status), mode: s(t.TransactionMode) || 'Double',
       type: mapType(t.TransactionType), direction: s(t.PlantDirectionType) || null, at: t.CreationTime, siteId: 'S1',
@@ -177,7 +184,8 @@ function transform(raw, camCfg) {
       accountId: t.AccountID ? ('A' + t.AccountID) : null,
       driverId: t.DriverID ? ('D' + t.DriverID) : (driverMap[s(t.DriverName).toLowerCase()] || null),
       rid: s(t.ReceiptTicketID) || null,
-      productId: prodId ? ('P' + prodId) : null, gateId: gateId ? ('G' + gateId) : null, charges: num(t.Charges),
+      productId: prodId ? ('P' + prodId) : null, productName: prodName,
+      gateId: gateId ? ('G' + gateId) : null, charges: num(t.Charges),
       tare, tareAt: tp ? (tp.TareTime || tp.CaptureTime) : null, gross, grossAt: gp ? (gp.GrossTime || gp.CaptureTime) : null,
       net, passes,
       cf: { cf1: s(t.CustomField1), cf2: s(t.CustomField2), cf3: s(t.CustomField3), cf4: s(t.CustomField4), cf5: s(t.CustomField5) },
@@ -428,6 +436,45 @@ async function saveImage(cfg, img) {
   catch (e) { return { ok: false, error: e.message }; }
 }
 
+/* ---------------------------------------------------------------------------
+ * Hard-deleting a master row.
+ *
+ * Only Product and Gate may be deleted, and only when NO ticket references the
+ * row. That is not merely a policy: TransactionDetail carries
+ * FK_TransactionDetail_Product and FK_TransactionDetail_Gate, both NO_ACTION,
+ * so SQL Server would refuse the delete anyway. The count below runs in the
+ * same statement as the delete so the operator gets a clear "used by N tickets"
+ * answer instead of a raw constraint error, and so nothing can slip in between
+ * the check and the delete.
+ *
+ * Everything else — vehicles, accounts, drivers, units, weighbridges — still
+ * has no delete path at all; deactivate remains the only way to retire those.
+ * ------------------------------------------------------------------------- */
+const DELETABLE = {
+  products: { table: 'Product', pk: 'ProductID', usageCol: 'ProductID' },
+  gates:    { table: 'Gate',    pk: 'GateID',    usageCol: 'GateID' }
+};
+
+/** payload: { entity: 'products'|'gates', id }
+ *  -> { ok:true } | { ok:false, inUse:<n> } | { ok:false, error } */
+async function deleteMaster(cfg, p) {
+  const def = DELETABLE[(p && p.entity) || ''];
+  if (!def) return { ok: false, error: 'this master cannot be deleted' };
+  const id = num(p && p.id);
+  if (!id) return { ok: false, error: 'no id given' };
+
+  // negative result = still referenced by that many ticket rows, nothing deleted
+  const sql =
+    `DECLARE @n INT; SET @n = (SELECT COUNT(*) FROM TransactionDetail WHERE ${def.usageCol} = ${id}); ` +
+    `IF @n > 0 SELECT -@n ELSE BEGIN DELETE FROM ${def.table} WHERE ${def.pk} = ${id}; SELECT 0 END`;
+  const out = await runPayload(cfg, { mode: 'scalar', sql }, 20000);
+  const m = /OK:(-?\d+)/.exec(out || '');
+  if (!m) return { ok: false, error: 'delete failed' };
+  const n = parseInt(m[1], 10);
+  if (n < 0) return { ok: false, inUse: -n };
+  return { ok: true };
+}
+
 /**
  * Correct saved weights on a ticket via wb-edit.ps1 — one invocation per
  * changed field, each atomic (update + net recompute + TransactionAudit row
@@ -451,4 +498,4 @@ async function editWeights(cfg, p) {
   return { ok: true, changed: changes.length };
 }
 
-module.exports = { snapshot, nextTicketNo, saveTicket, saveVehicle, saveMaster, authenticate, createSalt, saveImage, editWeights };
+module.exports = { snapshot, nextTicketNo, saveTicket, saveVehicle, saveMaster, deleteMaster, authenticate, createSalt, saveImage, editWeights };

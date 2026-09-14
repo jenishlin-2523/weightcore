@@ -11,6 +11,16 @@
   const vName = (id) => (DB.map.vehicle[id] || {}).no || '—';
   const aName = (id) => (DB.map.account[id] || {}).name || '—';
   const pName = (id) => (DB.map.product[id] || {}).name || '—';
+  /* A ticket's product name. Normally the master row wins, but a ticket raised
+     through the Disposal "OTHER" flow has NO ProductID at all — its material is
+     free text stored on the weighment row itself — so fall back to that. Also
+     covers a ticket whose master row was deleted. */
+  const prodOf = (t) => {
+    if (!t) return '—';
+    const m = DB.map.product[t.productId];
+    if (m && m.name) return m.name;
+    return (t.productName && String(t.productName).trim()) || '—';
+  };
   const gName = (id) => (DB.map.gate[id] || {}).name || '—';
   const uName = (id) => { const u = DB.map.user[id]; return u ? u.first + ' ' + u.last : '—'; };
   const dName = (id) => (DB.map.driver[id] || {}).name || '—';
@@ -210,7 +220,7 @@
           body: U.table([
             { label: 'Ticket', get: t => '<b class="mono">' + t.ticketNo + '</b>' },
             { label: 'Vehicle', get: t => '<div class="cellstack"><b>' + esc(vName(t.vehicleId)) + '</b><span>' + esc(aName(t.transporterId)) + '</span></div>' },
-            { label: 'Product', get: t => esc(pName(t.productId)) },
+            { label: 'Product', get: t => esc(prodOf(t)) },
             { label: 'First pass', get: t => t.passes.length ? '<span class="mono">' + esc(t.passes[0].kind) + ' ' + num(t.passes[0].weight) + '</span>' : '<span class="dim">—</span>' },
             { label: 'Dwell', num: true, get: t => { if (!t.passes.length) return '<span class="dim">—</span>'; const d = DB.NOW - t.passes[0].at; return '<span class="' + (d > 5.4e6 ? 'strong' : '') + '" style="' + (d > 5.4e6 ? 'color:var(--danger)' : '') + '">' + dur(d) + '</span>'; } },
             { label: 'Lane', get: t => esc((DB.map.wb[t.wbId] || {}).name || '—') }
@@ -314,8 +324,13 @@
      ---------------------------------------------------------------------- */
   const DIR_PLANT = { v: 'Plant to Yard', t: 'Plant → Yard' };
   const DIR_CUSTOMER = { v: 'Yard to Customer', t: 'Yard → Customer' };
+  /* Only RDF carries a direction: an RDF load either moves inside the site or is
+     sold out of the yard. Processing is always inbound, and Disposal material
+     simply leaves — asking for a direction there was noise, so no direction is
+     shown OR stored for either of them. */
+  const hasDirection = (txnType) => txnType === 'RDF';
   function directionOpts(txnType) {
-    return txnType === 'Disposal' ? [DIR_PLANT] : [DIR_PLANT, DIR_CUSTOMER];
+    return hasDirection(txnType) ? [DIR_PLANT, DIR_CUSTOMER] : [];
   }
   /* the direction column is spelled inconsistently in the live data
      ("YardToCustomer" 302 rows, "Yard to Customer" 33) — strip spaces and
@@ -378,6 +393,28 @@
     return best.id;
   }
 
+  /* ----------------------------------------------------------------------
+     Disposal "OTHER" — free text for a one-off material.
+
+     Picking OTHER reveals a required "Enter Details" box. Whatever is typed
+     becomes the product ON THAT TICKET ONLY: it is written to the weighment
+     row's ProductName with NO ProductID, so it never becomes a Product Master
+     row and never appears in the dropdown, however many tickets use it.
+
+     The OTHER master row exists purely to be that dropdown entry. Reports find
+     these tickets through the Disposal -> OTHER exclusion match, not by looking
+     up the OTHER row.
+     ---------------------------------------------------------------------- */
+  const OTHER_PRODUCT = 'OTHER';
+  const isOtherProduct = () => {
+    const p = DB.map.product[TS.productId];
+    return !!p && String(p.name || '').replace(/\s+/g, '').toUpperCase() === OTHER_PRODUCT;
+  };
+  /* what to store as this ticket's product name */
+  const ticketProductName = () =>
+    isOtherProduct() ? String(TS.otherProduct || '').trim()
+                     : (TS.productId ? pName(TS.productId) : null);
+
   /* Party Name defaults to the site's own operating company as a convenience.
      It stays a normal editable field — RDF and Disposal tickets often carry a
      different party, and the operator must be able to change or clear it. */
@@ -388,7 +425,7 @@
       mode: 'Double', weighType: 'Gross', txnType: 'Processing', direction: 'Plant to Yard',
       // a new ticket starts on Processing, so its product is filled in already
       vehicleId: '', transporterId: '', productId: defaultProductFor('Processing'),
-      gateId: '', driverId: '',
+      gateId: '', driverId: '', otherProduct: '',
       cf: { cf1: '', cf2: DEFAULT_PARTY, cf3: '', cf4: '', cf5: wbNumber(), cf6: '' },
       passes: [], recallOf: null, rid: genRid(), stable: false,
       ticketNo: Math.max.apply(null, DB.transactions.map(t => t.ticketNo)) + 1
@@ -444,6 +481,8 @@
   }
   function requiredOk() {
     if (!TS.vehicleId || !TS.transporterId || !TS.productId || !TS.gateId) return false;
+    // OTHER without the material typed in is not a complete ticket
+    if (isOtherProduct() && !String(TS.otherProduct || '').trim()) return false;
     for (const f of DB.customFields) if (f.visible && f.required && !TS.cf[f.key]) return false;
     if (TS.mode === 'Single') return TS.passes.length >= 1 && netOf() != null;
     // Double/Multi: the FIRST weighment already creates the ticket (Active),
@@ -676,6 +715,13 @@
         // metadata — editable even after the first pass (see lockNote above)
         comboField({ key: 'transporter', id: 'transporter', label: 'Transporter', req: true, placeholder: 'Search or add transporter…', value: TS.transporterId ? aName(TS.transporterId) : '' }),
         comboField({ key: 'product', id: 'product', label: 'Product', req: true, placeholder: 'Search or add product…', value: TS.productId ? pName(TS.productId) : '' }),
+        // free-text material, only while Disposal + OTHER is selected
+        (isOtherProduct()
+          ? '<div class="field"><label class="field__label" for="otherProd">Enter Details<span class="req">*</span></label>' +
+            '<input class="input" id="otherProd" autocomplete="off" spellcheck="false" maxlength="60"' +
+            ' placeholder="Type the material, e.g. Coconut Shell" value="' + esc(TS.otherProduct || '') + '">' +
+            '<div class="field__hint">Saved on this ticket only — it is never added to the Product master.</div></div>'
+          : ''),
         comboField({ key: 'gate', id: 'gate', label: 'Gate', req: true, placeholder: 'Search or add gate…', value: gLabel(TS.gateId) }),
         U.field({ label: 'Transaction Datetime', id: 'txnAt', type: 'datetime-local', value: U.fInput(DB.NOW), disabled: !DB.settings.enableTxnDateTime || lock })
       ];
@@ -705,7 +751,10 @@
                 U.seg('weighType', [{ v: 'Tare', t: 'Tare' }, { v: 'Gross', t: 'Gross' }], TS.weighType) + '</div>' +
               '<div class="row"><div class="field__label termlbl">Transaction Type</div>' +
                 U.seg('txnType', [{ v: 'Processing', t: 'Processing' }, { v: 'Disposal', t: 'Disposal' }, { v: 'RDF', t: 'RDF' }], TS.txnType) + '</div>' +
-              (TS.txnType !== 'Processing'
+              // Direction applies to RDF alone. Disposal used to show it with
+              // "Plant to Yard" as the only choice, which was noise on every
+              // disposal ticket; Processing never showed it.
+              (hasDirection(TS.txnType)
                 ? '<div class="row"><div class="field__label termlbl">Direction</div>' +
                   U.seg('direction', directionOpts(TS.txnType), TS.direction) + '</div>'
                 : '') +
@@ -939,6 +988,9 @@
           if (c.cf4) TS.cf.cf4 = c.cf4;
         }
         TS.transporterId = TS.transporterId || v.accountId;
+        // the prefill above can move the product off OTHER without going through
+        // the product picker, so drop any typed material that no longer applies
+        if (!isOtherProduct()) TS.otherProduct = '';
         if (v.type) TS.cf.cf1 = v.type;
         TS.target = pickTarget();
         repaint();
@@ -980,7 +1032,17 @@
           product: {
             list: () => productsForType(TS.txnType).map(p => ({ v: p.id, t: p.name })),
             display: () => TS.productId ? pName(TS.productId) : '',
-            pick: (id) => { TS.productId = id; refreshReceipt(); },
+            pick: (id) => {
+              const wasOther = isOtherProduct();
+              TS.productId = id;
+              // moving off OTHER discards the typed material rather than quietly
+              // carrying it onto a different product
+              if (!isOtherProduct()) TS.otherProduct = '';
+              // the Enter Details field lives in the LEFT form, which
+              // refreshReceipt() does not redraw — a full repaint is required
+              // whenever that field has to appear or disappear
+              if (wasOther !== isOtherProduct()) repaint(); else refreshReceipt();
+            },
             addLabel: (q) => 'Add product “' + q + '”',
             add: (name) => addMasterRow('products', 'P',
               { name, code: '', desc: '', txnType: 'All', active: true },
@@ -1090,8 +1152,10 @@
           else if (key === 'weighType') { TS.weighType = v; TS.target = pickTarget(); }
           else if (key === 'txnType') {
             TS.txnType = v;
-            // a direction that this type does not offer must not survive the switch
-            if (!directionOpts(v).some(o => o.v === TS.direction)) TS.direction = DIR_PLANT.v;
+            // a direction that this type does not offer must not survive the
+            // switch; types without one carry no direction at all
+            if (!hasDirection(v)) TS.direction = null;
+            else if (!directionOpts(v).some(o => o.v === TS.direction)) TS.direction = DIR_PLANT.v;
             // Drop the current product if it does not belong to the new type —
             // including when it no longer resolves at all, which happens after a
             // master sync deactivates or removes it. Without the !pp case a dead
@@ -1120,7 +1184,11 @@
 
       // master/list fields update TS through their combo picks; typing only
       // needs to keep the Continue button's enabled state honest
-      term.addEventListener('input', () => { syncBtns(); });
+      term.addEventListener('input', (e) => {
+        // the OTHER free-text material is plain typing, not a combo pick
+        if (e.target && e.target.id === 'otherProd') TS.otherProduct = e.target.value;
+        syncBtns();
+      });
 
       /* recall — type-ahead over the open tickets (ticket / vehicle / product) */
       function recallTicket(t) {
@@ -1184,12 +1252,12 @@
           items = DB.transactions.filter(t => t.status === 'Active' && t.passes.length).filter(t => !q ||
             String(t.ticketNo).indexOf(q) >= 0 ||
             vName(t.vehicleId).toLowerCase().indexOf(q) >= 0 ||
-            pName(t.productId).toLowerCase().indexOf(q) >= 0).slice(0, 20);
+            prodOf(t).toLowerCase().indexOf(q) >= 0).slice(0, 20);
           if (cursor > items.length - 1) cursor = items.length - 1;
           if (cursor < 0) cursor = 0;
           menu.innerHTML = items.length ? items.map((t, i) =>
             '<div class="combo__opt' + (i === cursor ? ' is-cursor' : '') + '" data-i="' + i + '"><b>#' + t.ticketNo + '</b>' +
-            '<small>' + esc(vName(t.vehicleId)) + ' · ' + esc(pName(t.productId)) + '</small></div>').join('')
+            '<small>' + esc(vName(t.vehicleId)) + ' · ' + esc(prodOf(t)) + '</small></div>').join('')
             : '<div class="combo__empty">No open ticket matches</div>';
           wrap.classList.add('is-open');
         };
@@ -1296,10 +1364,14 @@
         };
         Object.assign(t, {
           status: finishing ? 'Complete' : 'Active', mode: TS.mode, type: TS.txnType,
-          direction: TS.txnType === 'Processing' ? null : TS.direction,
+          direction: hasDirection(TS.txnType) ? TS.direction : null,
           vehicleId: TS.vehicleId, transporterId: TS.transporterId,
           accountId: rec ? rec.accountId : null,
-          driverId: TS.driverId, productId: TS.productId, gateId: TS.gateId,
+          driverId: TS.driverId, gateId: TS.gateId,
+          // OTHER: no master row, so the on-screen ticket carries the typed name
+          // exactly as the saved weighment row will (see prodOf)
+          productId: isOtherProduct() ? null : TS.productId,
+          productName: ticketProductName(),
           tare: tareOf(), gross: grossOf(), net: n,
           tareAt: ((np ? np.tarePass : TS.passes.filter(p => p.kind === 'Tare').pop()) || {}).at || null,
           grossAt: ((np ? np.grossPass : TS.passes.filter(p => p.kind === 'Gross').pop()) || {}).at || null,
@@ -1340,14 +1412,17 @@
             ticketNo: isUpdate ? rec.ticketNo : null,   // fresh tickets get MAX+1 inside the DB transaction
             status: finishing ? 'Complete' : 'Active', mode: TS.mode,
             transactionType: ({ Processing: 'Incoming', Disposal: 'Outgoing', RDF: 'Both' })[TS.txnType] || 'Incoming',
-            direction: TS.txnType === 'Processing' ? null : TS.direction,
+            direction: hasDirection(TS.txnType) ? TS.direction : null,
             vehicleId: sqlIdOf(TS.vehicleId, 'V'), vehicleNo: veh2.no || '',
             transporterId: sqlIdOf(TS.transporterId, 'A'),
             transporterName: TS.transporterId ? aName(TS.transporterId) : null,
             accountId: null, accountName: null,
             driverId: sqlIdOf(TS.driverId, 'D'),
             driverName: TS.driverId ? dName(TS.driverId) : null,
-            productId: sqlIdOf(TS.productId, 'P'), productName: TS.productId ? pName(TS.productId) : null,
+            // OTHER stores the typed material as the name with NO ProductID, so it
+            // lives on this ticket alone and never enters the Product master
+            productId: isOtherProduct() ? null : sqlIdOf(TS.productId, 'P'),
+            productName: ticketProductName(),
             gateId: sqlIdOf(TS.gateId, 'G'), gateName: TS.gateId ? gName(TS.gateId) : null,
             weightBridgeId: sqlIdOf(wb.id, 'WB'), weighbridgeName: wb.name,
             charges: 0, createdBy: sqlIdOf(me.id, 'US'), userName: me.username || null,
@@ -1484,7 +1559,7 @@
       '<div class="tiny dim">kg</div></div>';
     U.openModal(
       '<div class="modal__head"><div><div class="card__title">Edit weights — ticket #' + t.ticketNo + '</div>' +
-      '<div class="card__sub">' + esc(vName(t.vehicleId)) + ' · ' + esc(pName(t.productId)) + '</div></div>' +
+      '<div class="card__sub">' + esc(vName(t.vehicleId)) + ' · ' + esc(prodOf(t)) + '</div></div>' +
       '<div class="spacer"></div><button class="iconbtn" data-close>' + icon('x') + '</button></div>' +
       '<div class="modal__body">' +
       U.callout('warn', '<b>This corrects a commercial record.</b> The old value, new value, your username and the reason are written permanently to the audit table. The original weighment times stay unchanged.') +
@@ -1662,7 +1737,7 @@
     if (!window.AUTH.canDelete()) { U.toast('danger', 'Not permitted', 'Only a Super Administrator can delete a ticket.'); return; }
     U.openModal(
       '<div class="modal__head"><div><div class="card__title">Delete ticket #' + t.ticketNo + '</div>' +
-      '<div class="card__sub">' + esc(vName(t.vehicleId)) + ' · ' + esc(pName(t.productId)) + ' · net ' +
+      '<div class="card__sub">' + esc(vName(t.vehicleId)) + ' · ' + esc(prodOf(t)) + ' · net ' +
         (t.net != null ? num(t.net) + ' kg' : '—') + '</div></div>' +
       '<div class="spacer"></div><button class="iconbtn" data-close>' + icon('x') + '</button></div>' +
       '<div class="modal__body">' +
@@ -1754,7 +1829,7 @@
         rows = rows.filter(t => String(t.ticketNo).includes(q) ||
           vName(t.vehicleId).toLowerCase().includes(q) ||
           aName(t.transporterId).toLowerCase().includes(q) ||
-          pName(t.productId).toLowerCase().includes(q));
+          prodOf(t).toLowerCase().includes(q));
       }
       return rows;
     },
@@ -1772,7 +1847,7 @@
           { label: 'Ticket', w: '96px', get: t => '<b class="mono">' + t.ticketNo + '</b>' + (t.manual ? ' <span class="tag" title="Contains a manually entered weight">✱</span>' : '') },
           { label: 'Date / time', w: '150px', get: t => '<div class="cellstack"><b>' + fDate(t.at) + '</b><span>' + fTime(t.at) + ' · ' + esc((DB.map.wb[t.wbId] || {}).name || '—') + '</span></div>' },
           { label: 'Vehicle', get: t => '<div class="cellstack"><b>' + esc(vName(t.vehicleId)) + '</b><span>' + esc(aName(t.transporterId)) + '</span></div>' },
-          { label: 'Product', get: t => '<div class="cellstack"><b>' + esc(pName(t.productId)) + '</b><span>' + esc(t.mode) + (t.direction ? ' · ' + esc(t.direction) : '') + '</span></div>' },
+          { label: 'Product', get: t => '<div class="cellstack"><b>' + esc(prodOf(t)) + '</b><span>' + esc(t.mode) + (t.direction ? ' · ' + esc(t.direction) : '') + '</span></div>' },
           { label: 'Type', get: t => U.typeBadge(t.type) },
           { label: 'Tare', num: true, get: t => t.tare != null ? num(t.tare) : '<span class="dim">—</span>' },
           { label: 'Gross', num: true, get: t => t.gross != null ? num(t.gross) : '<span class="dim">—</span>' },
@@ -1810,7 +1885,7 @@
           const csv = ['Ticket,Date,Time,Vehicle,Transporter,Driver,Product,Gate,Type,Mode,Direction,Tare kg,Gross kg,Net kg,Status,Lane,Operator,Manual']
             .concat(rows.map(t => [
               t.ticketNo, fDate(t.at), fTime(t.at), vName(t.vehicleId), aName(t.transporterId), dName(t.driverId),
-              pName(t.productId), gName(t.gateId), t.type, t.mode, t.direction || '',
+              prodOf(t), gName(t.gateId), t.type, t.mode, t.direction || '',
               t.tare != null ? t.tare : '', t.gross != null ? t.gross : '', t.net != null ? t.net : '',
               t.status, (DB.map.wb[t.wbId] || {}).name || '', uName(t.operatorId), t.manual ? 'Yes' : ''
             ].map(q).join(','))).join('\r\n');
@@ -1842,7 +1917,7 @@
       const kvs = [
         ['Vehicle', vName(t.vehicleId)], ['Transporter', aName(t.transporterId)],
         ['Account', aName(t.accountId)],
-        ['Product', pName(t.productId)], ['Gate', gName(t.gateId)],
+        ['Product', prodOf(t)], ['Gate', gName(t.gateId)],
         ['Site', siteCode(t.siteId)], ['Lane', wbName(t.wbId)],
         ['Operator', uName(t.operatorId)], ['Charges', U.inr(t.charges)]
       ];
@@ -2035,7 +2110,7 @@
         company: coLine, project: project, line3: line3, printTime: fT12(new Date()),
         fields: {
           ticketId: String(t.ticketNo), vehicleNo: vName(t.vehicleId), transporter: aName(t.transporterId),
-          product: pName(t.productId), gate: gName(t.gateId),
+          product: prodOf(t), gate: gName(t.gateId),
           vehicleType: t.cf.cf1 || v.type || '—', partyName: partyOverride || t.cf.cf2 || '—',
           buyerName: t.cf.cf3 || '—', packageNo: t.cf.cf4 || '—', wbNo: t.cf.cf5 || '—'
         },
@@ -2186,7 +2261,7 @@
     const map = {
       ticketNo: t.ticketNo, vehicleNo: vName(t.vehicleId), accountName: aName(t.accountId),
       grossWt: t.gross, grossTime: t.grossAt ? fDT(t.grossAt) : '', tareWt: t.tare,
-      tareTime: t.tareAt ? fDT(t.tareAt) : '', netWt: t.net, product: pName(t.productId),
+      tareTime: t.tareAt ? fDT(t.tareAt) : '', netWt: t.net, product: prodOf(t),
       charges: t.charges, cf1: t.cf.cf1, cf2: t.cf.cf2, cf3: t.cf.cf3, cf4: t.cf.cf4, cf5: t.cf.cf5, cf6: t.cf.cf6,
       siteCode: siteCode(t.siteId), operator: uName(t.operatorId),
       signature: 'a7f' + (t.ticketNo * 7919).toString(16).slice(0, 8),

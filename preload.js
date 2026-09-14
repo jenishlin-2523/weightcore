@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('weighcore', {
     saveTicket:  (t) => ipcRenderer.invoke('data:saveTicket', t),
     saveVehicle: (v) => ipcRenderer.invoke('data:saveVehicle', v),
     saveMaster:  (m) => ipcRenderer.invoke('data:saveMaster', m),
+    deleteMaster:(m) => ipcRenderer.invoke('data:deleteMaster', m),            // products/gates only, and only when unused
     editTicket:  (payload) => ipcRenderer.invoke('data:editTicket', payload)   // audited weight correction
   },
   auth: {

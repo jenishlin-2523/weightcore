@@ -227,6 +227,15 @@ function registerIpc() {
     try { const r = await sqldb.saveVehicle(cfg.db, v); logLine('saveVehicle ' + (v && v.no) + ' ok=' + r.ok); return r; }
     catch (e) { logLine('saveVehicle FAILED: ' + e.message); return { ok: false, error: e.message }; }
   });
+  // hard-delete a Product/Gate master row — refused by sqldb when a ticket uses it
+  ipcMain.handle('data:deleteMaster', async (_e, m) => {
+    try {
+      const r = await sqldb.deleteMaster(cfg.db, m);
+      logLine('deleteMaster ' + ((m && m.entity) || '?') + ' #' + ((m && m.id) || '?') +
+        ' ok=' + r.ok + (r.inUse ? ' inUse=' + r.inUse : '') + (r.error ? ' ' + r.error : ''));
+      return r;
+    } catch (e) { logLine('deleteMaster FAILED: ' + e.message); return { ok: false, error: e.message }; }
+  });
   ipcMain.handle('data:saveMaster', async (_e, m) => {
     try { const r = await sqldb.saveMaster(cfg.db, m); logLine('saveMaster ' + (m && m.entity) + '#' + ((m && m.id) || 'new') + ' ok=' + r.ok + (r.error ? ' ' + r.error : '')); return r; }
     catch (e) { logLine('saveMaster FAILED: ' + e.message); return { ok: false, error: e.message }; }

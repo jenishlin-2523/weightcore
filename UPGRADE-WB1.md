@@ -136,6 +136,56 @@ the old name straight back, leaving more gates than you started with.
 
 ---
 
+# v1.2.4 — the terminal can no longer invent gates or packages
+
+Two fields on the weighbridge were free-text type-aheads that could add new master
+rows. That is where the mess came from, and `wb-sync` merges masters by NAME, so
+every typo became a permanent row on **both** bridges.
+
+| Field | Was | Now |
+|---|---|---|
+| **Gate** | type-ahead with "＋ Add gate …" | closed dropdown, active gates only |
+| **Package No** (`cf4`) | type-ahead with "＋ Add …" | closed dropdown, one value, pre-selected |
+
+WB2 had grown six gates — `package-5`, `package-5 WB 2`, `Package 5 Wb2`,
+`Package 5 Wb1`, `test`, `Main Gate` — and the Package No list carried
+`PACKAGE 5`, `Package-5`, `PKG 5` and `PACKAGE 2`.
+
+New gates now come from **Master data → Gates** only. Party Name and Buyer Name
+are deliberately left typeable: those genuinely vary per ticket.
+
+### Package No is defaulted
+
+Every new ticket starts with Package No already set, since the site is one
+package. The value is **`PACKAGE 5` in capitals** — all 1,742 existing WB2
+tickets store that exact spelling, and changing the case would split every
+report between two values. Check what WB1 stores before you deploy:
+
+```sql
+SELECT ISNULL(NULLIF(LTRIM(RTRIM(CustomField4)),''),'(blank)') AS package_no,
+       COUNT(*) AS tickets, MAX(CreationTime) AS last_used
+FROM TransactionData GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(CustomField4)),''),'(blank)')
+ORDER BY 2 DESC;
+```
+
+If WB1 stores a different spelling, change `FIXED_CF` at the top of
+`views-ops.js` to match **what is already in WB1's data** — do not "tidy" it, or
+WB1's history splits in two.
+
+```js
+const FIXED_CF = { cf4: ['PACKAGE 5'] };
+```
+
+The same mechanism locks any other configurable field: add its `cf` key with the
+allowed values. A value already on a recalled ticket that is no longer offered is
+kept and marked `(not in use)` rather than silently rewritten, so history is
+never altered. A gate retired after being chosen behaves the same way.
+
+**File:** `renderer/assets/js/views-ops.js` only. No config, no schema change.
+Tests: `tools/test-gate-select.mjs` (17), `tools/test-packageno.mjs` (14).
+
+---
+
 # v1.2.3 — deactivation finally crosses between bridges
 
 **This part MUST be installed on BOTH bridges in the same maintenance window.**

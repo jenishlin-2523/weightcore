@@ -420,13 +420,42 @@
      different party, and the operator must be able to change or clear it. */
   const DEFAULT_PARTY = 'CHENNAI BIOMINNING LTD';
 
+  /* Configurable fields whose value is FIXED for this site: a closed dropdown
+     rather than a type-ahead that can add entries, and the first value is the
+     default on a new ticket.
+     Package No (cf4) is the whole reason — the site is one package, Package 5,
+     yet the field was free text and the demo list alone carried four spellings
+     (PACKAGE 5 / Package-5 / PKG 5 / PACKAGE 2). Live tickets use PACKAGE 5,
+     1,742 of them, so that exact spelling is kept: changing the case now would
+     split every existing report. */
+  const FIXED_CF = { cf4: ['PACKAGE 5'] };
+  const cfDefault = (key) => (FIXED_CF[key] ? FIXED_CF[key][0] : '');
+
+  /* a closed <select> for a fixed field; a value already on the ticket that is
+     no longer offered is kept and marked, never silently dropped */
+  const fixedCfField = (f) => {
+    const allowed = FIXED_CF[f.key] || [];
+    const cur = String(TS.cf[f.key] || '').trim();
+    const opts = allowed.slice();
+    const known = opts.some((v) => v.toLowerCase() === cur.toLowerCase());
+    if (cur && !known) opts.push(cur);
+    return '<div class="field"><label class="field__label" for="' + f.key + '">' + esc(f.label) +
+      (f.required ? '<span class="req">*</span>' : '') + '</label>' +
+      '<select class="input" id="' + f.key + '">' +
+        (f.required ? '' : '<option value=""' + (cur ? '' : ' selected') + '>—</option>') +
+        opts.map((v) => '<option value="' + esc(v) + '"' + (v.toLowerCase() === cur.toLowerCase() ? ' selected' : '') + '>' +
+          esc(v) + (allowed.some((a) => a.toLowerCase() === v.toLowerCase()) ? '' : ' (not in use)') + '</option>').join('') +
+      '</select></div>';
+  };
+
   function resetTS() {
     Object.assign(TS, {
       mode: 'Double', weighType: 'Gross', txnType: 'Processing', direction: 'Plant to Yard',
       // a new ticket starts on Processing, so its product is filled in already
       vehicleId: '', transporterId: '', productId: defaultProductFor('Processing'),
       gateId: '', driverId: '', otherProduct: '',
-      cf: { cf1: '', cf2: DEFAULT_PARTY, cf3: '', cf4: '', cf5: wbNumber(), cf6: '' },
+      // cf4 (Package No) is fixed for this site — see FIXED_CF
+      cf: { cf1: '', cf2: DEFAULT_PARTY, cf3: '', cf4: cfDefault('cf4'), cf5: wbNumber(), cf6: '' },
       passes: [], recallOf: null, rid: genRid(), stable: false,
       ticketNo: Math.max.apply(null, DB.transactions.map(t => t.ticketNo)) + 1
     });
@@ -546,7 +575,6 @@
     return out;
   }
 
-  const gLabel = (id) => { const g = DB.map.gate[id]; return g ? g.name + ' (' + (g.type || 'BOTH') + ')' : ''; };
 
   function auditAdd(table, text) {
     DB.audit.unshift({
@@ -591,6 +619,25 @@
         '<div class="combo__menu"></div></div>' +
       (o.hint || '') +
     '</div>';
+
+  /* Gate picker: a real <select> over the ACTIVE gates, so nothing new can be
+     typed into the master from the weighbridge. If the ticket already carries a
+     gate that has since been retired (a recall, or a vehicle's last ticket), it
+     is kept as a marked option rather than silently cleared. */
+  const gateSelectField = () => {
+    const live = DB.gates.filter(g => g.active);
+    const cur = TS.gateId ? DB.map.gate[TS.gateId] : null;
+    const opts = live.slice();
+    if (cur && !live.some(g => g.id === cur.id)) opts.unshift(cur);
+    return '<div class="field"><label class="field__label" for="gate">Gate<span class="req">*</span></label>' +
+      '<select class="input" id="gate">' +
+        '<option value=""' + (TS.gateId ? '' : ' selected') + '>Select gate…</option>' +
+        opts.map(g => '<option value="' + esc(g.id) + '"' + (TS.gateId === g.id ? ' selected' : '') + '>' +
+          esc(g.name) + (g.active ? '' : ' (retired)') + '</option>').join('') +
+      '</select>' +
+      (live.length ? '' : '<div class="field__hint" style="color:var(--danger)">No active gate on file — add one under Master data → Gates.</div>') +
+    '</div>';
+  };
 
   /* the Receipt Details pane, extracted so field picks can refresh it in
      place without re-rendering (and re-focusing) the whole terminal */
@@ -728,15 +775,22 @@
               '<div class="field__hint">Saved on this ticket only — it is never added to the Product master.</div></div>'
             : '') +
         '</div>',
-        comboField({ key: 'gate', id: 'gate', label: 'Gate', req: true, placeholder: 'Search or add gate…', value: gLabel(TS.gateId) }),
+        // Gate is a PLAIN DROPDOWN, not a type-ahead that can add rows. The site
+        // has one package with exactly two gates; letting operators type one
+        // created six ("package-5", "package-5 WB 2", "Package 5 Wb2", "test"…),
+        // and wb-sync merges gates by name, so every typo became a permanent
+        // master row on both bridges. New gates now come from Master data only.
+        gateSelectField(),
         U.field({ label: 'Transaction Datetime', id: 'txnAt', type: 'datetime-local', value: U.fInput(DB.NOW), disabled: !DB.settings.enableTxnDateTime || lock })
       ];
       // configurable fields (Vehicle Type, Party Name, Buyer Name, Package No …)
       // are metadata too — never locked
-      const cfs = DB.customFields.filter(f => f.visible).map(f => comboField({
-        key: f.key, id: f.key, label: f.label, req: f.required, maxLen: f.maxLen,
-        placeholder: 'Search or add…', value: TS.cf[f.key] || ''
-      }));
+      const cfs = DB.customFields.filter(f => f.visible).map(f => (
+        FIXED_CF[f.key] ? fixedCfField(f) : comboField({
+          key: f.key, id: f.key, label: f.label, req: f.required, maxLen: f.maxLen,
+          placeholder: 'Search or add…', value: TS.cf[f.key] || ''
+        })
+      ));
       const sheet = [];
       for (let i = 0; i < Math.max(masters.length, cfs.length); i++) {
         sheet.push(masters[i] || '<div></div>', cfs[i] || '<div></div>');
@@ -1058,21 +1112,13 @@
                 U.toast('ok', 'Product added', name + ' is on file and selected.');
               })
           },
-          gate: {
-            list: () => DB.gates.filter(g => g.active).map(g => ({ v: g.id, t: g.name + ' (' + (g.type || 'BOTH') + ')' })),
-            display: () => gLabel(TS.gateId),
-            pick: (id) => { TS.gateId = id; refreshReceipt(); },
-            addLabel: (q) => 'Add gate “' + q + '”',
-            add: (name) => addMasterRow('gates', 'G',
-              { name, type: 'BOTH', active: true },
-              DB.gates, 'gate', (rec) => {
-                TS.gateId = rec.id; refreshReceipt();
-                auditAdd('Gate', 'Gate ' + name + ' added from the terminal');
-                U.toast('ok', 'Gate added', name + ' is on file and selected.');
-              })
-          }
+          // NO 'gate' entry: the gate is a plain <select> (gateSelectField), so a
+          // new gate can never be created from the weighbridge. See the comment
+          // beside the field for why.
         };
-        DB.customFields.filter(f => f.visible).forEach(f => {
+        // a FIXED_CF field is a closed <select>, so it gets no combo def and
+        // therefore no "＋ Add …" row
+        DB.customFields.filter(f => f.visible && !FIXED_CF[f.key]).forEach(f => {
           defs[f.key] = {
             list: () => cfOptions(f.key).map(v => ({ v, t: v })),
             display: () => TS.cf[f.key] || '',
@@ -1194,6 +1240,20 @@
         // the OTHER free-text material is plain typing, not a combo pick
         if (e.target && e.target.id === 'otherProd') TS.otherProduct = e.target.value;
         syncBtns();
+      });
+
+      // Gate and the fixed configurable fields are plain <select>s, so they
+      // report through change rather than a combo pick
+      term.addEventListener('change', (e) => {
+        const id = e.target && e.target.id;
+        if (!id) return;
+        if (id === 'gate') {
+          TS.gateId = e.target.value || '';
+          refreshReceipt(); syncBtns();
+        } else if (FIXED_CF[id]) {
+          TS.cf[id] = e.target.value || '';
+          refreshReceipt(); syncBtns();
+        }
       });
 
       /* recall — type-ahead over the open tickets (ticket / vehicle / product) */

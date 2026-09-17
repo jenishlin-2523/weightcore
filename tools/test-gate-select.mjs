@@ -51,7 +51,11 @@ try {
   ok('Package 5 Wb2 is offered', g.opts.some(t => /Package 5 Wb2/.test(t)));
   ok('the retired gates are NOT offered',
      !g.opts.some(t => /package-5$|package-5 WB 2|test|Main Gate/.test(t)), g.opts.join(' | '));
-  ok('nothing is preselected, so the operator must choose', g.value === '', 'value=' + g.value);
+  // WAS: "nothing is preselected, so the operator must choose".
+  // Changed deliberately — the terminal now starts on its OWN gate (defaultGateId),
+  // so a wrong gate takes a deliberate change instead of a missed one.
+  // Full coverage of the rule and its fallbacks is in test-gate-default.mjs.
+  ok('the terminal\'s own gate is preselected', g.value === 'G12', 'value=' + g.value);
 
   console.log('\n=== a gate cannot be created from the terminal ===');
   const add = J(await b.eval(`

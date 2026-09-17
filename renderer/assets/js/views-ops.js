@@ -453,7 +453,8 @@
       mode: 'Double', weighType: 'Gross', txnType: 'Processing', direction: 'Plant to Yard',
       // a new ticket starts on Processing, so its product is filled in already
       vehicleId: '', transporterId: '', productId: defaultProductFor('Processing'),
-      gateId: '', driverId: '', otherProduct: '',
+      // starts on THIS terminal's own gate, so a mis-pick takes a deliberate change
+      gateId: defaultGateId(), driverId: '', otherProduct: '',
       // cf4 (Package No) is fixed for this site — see FIXED_CF
       cf: { cf1: '', cf2: DEFAULT_PARTY, cf3: '', cf4: cfDefault('cf4'), cf5: wbNumber(), cf6: '' },
       passes: [], recallOf: null, rid: genRid(), stable: false,
@@ -619,6 +620,41 @@
         '<div class="combo__menu"></div></div>' +
       (o.hint || '') +
     '</div>';
+
+  /* Which gate a new ticket starts on.
+     Derived from THIS machine's own scale id — config.site.scaleId reaches the
+     renderer as window.__TERMINAL_SCALE, and wbNumber() turns P5WB2 into "2" —
+     never a hardcoded id or name, because gate ids differ per bridge and this
+     same file has to be correct on both. Matching is on the weighbridge NUMBER
+     inside the gate name, so it survives the gates being renamed as long as the
+     number is still in there.
+     Order: the one active gate carrying this bridge's number → the only active
+     gate → the most-used active gate in this terminal's own history → blank.
+     It can only ever return a gate that already exists and is active; it never
+     invents one, and it never falls back to another bridge's gate by name.
+     Declared as a hoisted function on purpose: resetTS() runs at module load,
+     well above this line, and a `const` arrow would be in its temporal dead
+     zone there and throw. */
+  function defaultGateId() {
+    const live = DB.gates.filter(g => g.active);
+    if (!live.length) return '';
+
+    const n = String(wbNumber() || '').trim();
+    if (n) {
+      // "Package 5 Wb2" / "P5 WB 02" -> matches bridge 2; "…Wb1" must not
+      const re = new RegExp('WB\\s*0*' + n + '(?!\\d)', 'i');
+      const mine = live.filter(g => re.test(String(g.name || '')));
+      if (mine.length === 1) return mine[0].id;
+    }
+    if (live.length === 1) return live[0].id;
+
+    // this terminal's DB holds only its own tickets, so this is genuinely local history
+    const used = {};
+    DB.transactions.forEach(t => { if (t.gateId) used[t.gateId] = (used[t.gateId] || 0) + 1; });
+    let best = '', top = 0;
+    live.forEach(g => { const c = used[g.id] || 0; if (c > top) { top = c; best = g.id; } });
+    return best;
+  }
 
   /* Gate picker: a real <select> over the ACTIVE gates, so nothing new can be
      typed into the master from the weighbridge. If the ticket already carries a

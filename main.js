@@ -236,9 +236,38 @@ function registerIpc() {
       return r;
     } catch (e) { logLine('deleteMaster FAILED: ' + e.message); return { ok: false, error: e.message }; }
   });
+  /* Central holds the authoritative active/inactive for a master row, so that a
+   * deactivation made here also reaches the other weighbridge (wb-sync no longer
+   * lets a bridge overwrite it, and its pull applies central's value). If the
+   * link is down we say so rather than silently diverging — the next sync would
+   * otherwise pull central's old value straight back over this change. */
+  function centralCfg() {
+    const v = cfg.vpsSql;
+    if (!v || !v.enabled || !v.user) return null;
+    const port = (v.ssh && v.ssh.localPort) || 14330;
+    return { server: v.server || ('127.0.0.1,' + port), database: v.database || 'svt_weighbridge',
+      user: v.user, password: v.password };
+  }
   ipcMain.handle('data:saveMaster', async (_e, m) => {
-    try { const r = await sqldb.saveMaster(cfg.db, m); logLine('saveMaster ' + (m && m.entity) + '#' + ((m && m.id) || 'new') + ' ok=' + r.ok + (r.error ? ' ' + r.error : '')); return r; }
-    catch (e) { logLine('saveMaster FAILED: ' + e.message); return { ok: false, error: e.message }; }
+    try {
+      const r = await sqldb.saveMaster(cfg.db, m);
+      logLine('saveMaster ' + (m && m.entity) + '#' + ((m && m.id) || 'new') + ' ok=' + r.ok + (r.error ? ' ' + r.error : ''));
+      const f = (m && m.fields) || {};
+      const cc = centralCfg();
+      if (r.ok && cc && Object.prototype.hasOwnProperty.call(f, 'active') && f.name) {
+        try {
+          const s = await sqldb.setMasterStatus(cc, { entity: m.entity, name: f.name, active: f.active });
+          logLine('  status -> central ' + m.entity + ' "' + f.name + '" active=' + (f.active !== false) +
+            ' ok=' + s.ok + (s.rows != null ? ' rows=' + s.rows : '') + (s.error ? ' ' + s.error : ''));
+          if (!s.ok) r.centralWarning = 'Saved here, but central could not be updated, so the other weighbridge will not see it and this change may be reverted on the next sync.';
+          else if (s.rows === 0) r.centralWarning = 'Saved here, but no matching row exists on central yet — it will be created on the next sync, then set the status again.';
+        } catch (e) {
+          logLine('  status -> central FAILED: ' + e.message);
+          r.centralWarning = 'Saved here, but the central server is unreachable, so the other weighbridge will not see it and this change may be reverted on the next sync.';
+        }
+      }
+      return r;
+    } catch (e) { logLine('saveMaster FAILED: ' + e.message); return { ok: false, error: e.message }; }
   });
   // audited weight correction on a saved ticket (writes TransactionAudit)
   ipcMain.handle('data:editTicket', async (_e, payload) => {

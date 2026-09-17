@@ -361,7 +361,14 @@
         const fields = Object.assign({}, rec, out, { accountId: sqlIdOf(out.accountId != null ? out.accountId : rec.accountId, 'A') });
         const idNum = isNew ? null : sqlIdOf(rec.id, pre);
         wc.data.saveMaster({ entity: key, id: idNum, fields }).then(function (r) {
-          if (r && r.ok) { if (isNew || !idNum) out.id = pre + r.id; doneLocal(true); }
+          if (r && r.ok) {
+            if (isNew || !idNum) out.id = pre + r.id;
+            doneLocal(true);
+            // active/inactive lives on central so the OTHER weighbridge sees it;
+            // if that write did not land, say so rather than let the next sync
+            // quietly pull the old value back over this change
+            if (r.centralWarning) U.toast('warn', 'Not shared with the other weighbridge', r.centralWarning);
+          }
           else {
             if (!out.id) out.id = key.slice(0, 2).toUpperCase() + 'X' + Date.now();
             doneLocal(false);

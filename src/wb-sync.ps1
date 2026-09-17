@@ -24,6 +24,40 @@ function Read-Rows($conn, $sql) {
 }
 function DbNull($v) { if ($v -eq $null -or $v -is [System.DBNull]) { return $true } return $false }
 
+# ---------------------------------------------------------------------------
+# Active/inactive on a master row is CENTRAL-AUTHORITATIVE.
+#
+# Masters merge by natural key, so both bridges hold a row for the same name.
+# Previously each bridge pushed its whole master list every cycle and the pull
+# skipped any name it already had, so a deactivation on one bridge (a) never
+# reached the other and (b) was overwritten on central by whichever bridge
+# synced last — the value oscillated and nothing ever converged.
+#
+# Now: a bridge NEVER overwrites the status column of an existing central row
+# (it still supplies it when INSERTing a brand-new row), and the pull applies
+# central's status to rows it already has. One value, one authority, no flap.
+# Everything else about the row still flows bridge -> central as before.
+#
+# The app writes a status change straight to central (sqldb.saveMaster), so the
+# Masters screen keeps working; this is what makes the change visible to the
+# other bridge on its next cycle.
+# ---------------------------------------------------------------------------
+# GATE IS DELIBERATELY ABSENT — add it only once BOTH bridges run this version.
+# Until then WB1 still runs the old sync, which pushes its whole master list every
+# cycle: on 2026-09-17 it set Main Gate, test and package-5 WB 2 back to active on
+# central minutes after WB2 deactivated them. Turning gate status on here while
+# WB1 is unpatched would pull WB1's list down and restore all six gates on WB2.
+# package-5 is also WB1's live gate (56,869 rows, used today) while being junk on
+# WB2, so a shared gate status cannot be right for both until WB1 has moved its
+# weighments onto Package 5 Wb1. WeightBridge is out for good — it is per-machine
+# hardware and is never pulled.
+$STATUS_COL = @{
+  'Product'    = 'IsActive'; 'Vehicle'  = 'IsActive'
+  'Account'    = 'Active';   'Driver'   = 'Active'
+  'UserMaster' = 'Active';   'Template' = 'Active'
+}
+function StatusCol($table) { if ($STATUS_COL.ContainsKey($table)) { return $STATUS_COL[$table] } return $null }
+
 # localId -> centralId, matched on a natural-key expression present in both DBs
 function Build-Map($local, $remote, $table, $pk, $natExpr) {
   $map = @{}; $rem = @{}
@@ -37,9 +71,11 @@ function Remap($map, $v) { if (DbNull $v) { return [System.DBNull]::Value }; $iv
 
 # UPSERT one row into $remote keyed by natural-key columns; $remap = @{ colName = idMap }
 function Upsert-Nat($remote, $table, $natCols, $writeCols, $row, $remap) {
+  # the status column is deliberately absent from the UPDATE set: central owns it
+  $skip   = StatusCol $table
   $srcSel = ($writeCols | ForEach-Object { "@p_$_ AS [$_]" }) -join ','
   $on     = ($natCols   | ForEach-Object { "ISNULL(tgt.[$_],'')=ISNULL(src.[$_],'')" }) -join ' AND '
-  $upd    = ($writeCols | Where-Object { $natCols -notcontains $_ } | ForEach-Object { "tgt.[$_]=src.[$_]" }) -join ','
+  $upd    = ($writeCols | Where-Object { $natCols -notcontains $_ -and $_ -ne $skip } | ForEach-Object { "tgt.[$_]=src.[$_]" }) -join ','
   $insC   = ($writeCols | ForEach-Object { "[$_]" }) -join ','
   $insV   = ($writeCols | ForEach-Object { "src.[$_]" }) -join ','
   $whenMatched = if ($upd) { "WHEN MATCHED THEN UPDATE SET $upd " } else { "" }
@@ -64,14 +100,39 @@ function Upsert-Nat($remote, $table, $natCols, $writeCols, $row, $remap) {
 
 # Pull central rows missing locally (by natural key) into local, FK-remapped central->local
 function Pull-Table($local, $remote, $table, $natCols, $insCols, $remap) {
+  $status = StatusCol $table
   $have = @{}
-  $dl = Read-Rows $local ("SELECT " + (($natCols | ForEach-Object { "[$_]" }) -join ',') + " FROM [$table]")
-  foreach ($r in $dl.Rows) { $have[(($natCols | ForEach-Object { [string]$r[$_] }) -join '|')] = 1 }
+  $sel = $natCols
+  if ($status -and $insCols -contains $status) { $sel = @($natCols) + @($status) }
+  $dl = Read-Rows $local ("SELECT " + (($sel | ForEach-Object { "[$_]" }) -join ',') + " FROM [$table]")
+  foreach ($r in $dl.Rows) {
+    $k = (($natCols | ForEach-Object { [string]$r[$_] }) -join '|')
+    $have[$k] = if ($status -and $insCols -contains $status) { $r[$status] } else { 1 }
+  }
   $dr = Read-Rows $remote ("SELECT " + (($insCols | ForEach-Object { "[$_]" }) -join ',') + " FROM [$table]")
   $n = 0
   foreach ($r in $dr.Rows) {
     $k = (($natCols | ForEach-Object { [string]$r[$_] }) -join '|')
-    if ($have.ContainsKey($k)) { continue }
+    if ($have.ContainsKey($k)) {
+      # row exists locally: central owns active/inactive, so apply it if it differs
+      if ($status -and $insCols -contains $status -and -not (DbNull $r[$status])) {
+        $want = [int]$r[$status]
+        $mine = if (DbNull $have[$k]) { -1 } else { [int]$have[$k] }
+        if ($mine -ne $want) {
+          $u = $local.CreateCommand()
+          $where = ($natCols | ForEach-Object { "ISNULL([$_],'')=ISNULL(@k_$_,'')" }) -join ' AND '
+          $u.CommandText = "UPDATE [$table] SET [$status]=@s WHERE $where"
+          [void]$u.Parameters.AddWithValue('@s', $want)
+          foreach ($c in $natCols) {
+            $kv = $r[$c]
+            if (DbNull $kv) { [void]$u.Parameters.AddWithValue("@k_$c", [System.DBNull]::Value) }
+            else { [void]$u.Parameters.AddWithValue("@k_$c", $kv) }
+          }
+          [void]$u.ExecuteNonQuery(); $script:sFixed++
+        }
+      }
+      continue
+    }
     $ins = $local.CreateCommand()
     $ins.CommandText = "INSERT INTO [$table] (" + (($insCols | ForEach-Object { "[$_]" }) -join ',') + ") VALUES (" + (($insCols | ForEach-Object { "@p_$_" }) -join ',') + ")"
     foreach ($c in $insCols) {
@@ -116,6 +177,9 @@ try {
   PushTable 'UserMaster'   @('UserName') @('UserName','FirstName','LastName','Email','ContactNo','TemplateID','Salt','Active') @{ TemplateID = $tmplMap }
 
   # ---- pull central masters down into local (shared pick-lists) ----
+  # sFixed counts rows whose active/inactive was corrected FROM central — this is
+  # how a deactivation made on the other bridge finally lands here.
+  $script:sFixed = 0
   $pCount = 0
   $pCount += Pull-Table $local $remote 'Unit'     @('UnitName')     @('UnitName') $null
   $pCount += Pull-Table $local $remote 'Template' @('TemplateName') @('TemplateName','Active') $null
@@ -204,7 +268,7 @@ try {
   }
 
   $local.Close(); $remote.Close()
-  [Console]::Out.Write("SYNC_OK:{""scale"":""$ScaleID"",""masters"":$mCount,""pulled"":$pCount,""tickets"":$tCount,""details"":$dCount,""images"":$iCount}")
+  [Console]::Out.Write("SYNC_OK:{""scale"":""$ScaleID"",""masters"":$mCount,""pulled"":$pCount,""status"":$script:sFixed,""tickets"":$tCount,""details"":$dCount,""images"":$iCount}")
 } catch {
   try { if ($local) { $local.Close() } } catch {}
   try { if ($remote) { $remote.Close() } } catch {}

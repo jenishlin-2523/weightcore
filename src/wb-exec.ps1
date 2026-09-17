@@ -1,4 +1,4 @@
-param([string]$Server,[string]$Database,[string]$PayloadFile)
+param([string]$Server,[string]$Database,[string]$PayloadFile,[string]$User,[string]$Password)
 # Static SQL runner. All dynamic content arrives as DATA in $PayloadFile (JSON):
 #   { mode:'scalar', sql }                       -> OK:<scalar>
 #   { mode:'row',    sql }                       -> OK:<json object or empty>
@@ -8,7 +8,11 @@ $tx=$null
 try {
   $raw = Get-Content -LiteralPath $PayloadFile -Raw -Encoding UTF8
   $p = ConvertFrom-Json $raw
-  $cn = New-Object System.Data.SqlClient.SqlConnection "Server=$Server;Database=$Database;Integrated Security=True"
+  # -User/-Password reach the CENTRAL server over the ssh tunnel (SQL auth);
+  # with no -User this is the local instance exactly as before (Windows auth).
+  $cs = if ($User) { "Server=$Server;Database=$Database;User ID=$User;Password=$Password;Encrypt=True;TrustServerCertificate=True;Connection Timeout=20" }
+        else { "Server=$Server;Database=$Database;Integrated Security=True" }
+  $cn = New-Object System.Data.SqlClient.SqlConnection $cs
   $cn.Open()
   if ($p.mode -eq 'scalar') {
     $c=$cn.CreateCommand(); $c.CommandText=$p.sql

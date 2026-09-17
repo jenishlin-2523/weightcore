@@ -134,6 +134,68 @@ GateID IN (...)`), then deactivate the rest. **Do not rename a gate** — the sy
 merges by `GateName`, so a rename inserts a new central row and the pull brings
 the old name straight back, leaving more gates than you started with.
 
+---
+
+# v1.2.3 — deactivation finally crosses between bridges
+
+**This part MUST be installed on BOTH bridges in the same maintenance window.**
+It is committed but deliberately **not deployed** on WB2 for that reason.
+
+## The bug
+
+Deactivating a product on one bridge never reached the other, for two reasons at
+once: `Pull-Table` skipped any name it already had, and every bridge pushed its
+whole master list each cycle, so central was simply whoever synced last. Captured
+live on 2026-09-17:
+
+```
+23:27:19  central: Main Gate, package-5, package-5 WB 2, test = ACTIVE   (WB1 pushed 22:56)
+17:57:32Z WB2 syncs -> pushes IsActive=0
+23:28:34  central: all four = INACTIVE
+```
+
+## The fix
+
+Active/inactive becomes **central-authoritative**: a bridge no longer overwrites
+that column on an existing central row (it still supplies it when inserting a new
+one), and the pull applies central's value to rows it already has. The app writes
+a status change straight to central via `sqldb.setMasterStatus`, so the Masters
+screen keeps working, and warns you if central was unreachable instead of letting
+the next sync quietly revert the change.
+
+Covered: Product, Vehicle, Account, Driver, UserMaster, Template.
+**Gate is deliberately excluded** — see below. WeightBridge is excluded for good
+(per-machine hardware, never pulled).
+
+## Why both bridges, together
+
+Until a bridge runs this version it still pushes its entire master list every
+cycle. Install it on one side only and that side stops defending its own values
+while the other keeps overwriting central — the patched bridge becomes a
+**follower of the unpatched one** and its curated list is undone. Measured on
+WB2: 19 vehicles and 6 products would have been rewritten to WB1's values.
+
+## Why gates are left out for now
+
+On 2026-09-17 WB1 still had all six gates active and pushed them to central, and
+`package-5` is WB1's live gate — 56,869 weighments, used that same day — while
+being junk on WB2 with 92. A shared gate status cannot be right for both until
+WB1 moves its weighments onto `Package 5 Wb1`. **Order: upgrade both bridges →
+consolidate WB1's gates → only then add `'Gate' = 'IsActive'` to `$STATUS_COL`
+in `wb-sync.ps1` on both machines.**
+
+## Files (all four, both bridges)
+
+`src/wb-sync.ps1`, `src/wb-exec.ps1` (gains optional `-User`/`-Password` so the
+app can reach central over the tunnel; with no `-User` it is the local instance
+exactly as before), `main.js`, `renderer/assets/js/views-admin.js`.
+
+## Before switching it on
+
+Run `tools/predict-status-sync.ps1` on each bridge. It lists every row whose
+status central would rewrite. **Read that list first** — reconcile anything wrong
+on central before the first sync, because after it the local value is replaced.
+
 ## Three traps worth knowing
 
 1. **`TRACKUSERAUDIT_*` triggers inflate row counts.** An `n`-row update reports

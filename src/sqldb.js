@@ -52,7 +52,10 @@ async function runPayload(cfg, payload, timeoutMs = 30000) {
     const f = path.join(os.tmpdir(), 'wc-sql-' + process.pid + '-' + (++payloadSeq) + '.json');
     try {
       fs.writeFileSync(f, '﻿' + JSON.stringify(payload), 'utf8');
-      const out = await runPs(['-File', path.join(__dirname, 'wb-exec.ps1'), '-Server', cfg.server, '-Database', cfg.database, '-PayloadFile', f], timeoutMs);
+      // cfg.user is only set for the CENTRAL server (SQL auth over the tunnel);
+      // the local instance keeps using Windows auth with no credentials at all.
+      const auth = cfg.user ? ['-User', String(cfg.user), '-Password', String(cfg.password || '')] : [];
+      const out = await runPs(['-File', path.join(__dirname, 'wb-exec.ps1'), '-Server', cfg.server, '-Database', cfg.database, '-PayloadFile', f, ...auth], timeoutMs);
       try { fs.unlinkSync(f); } catch (_) {}
       return out;
     } catch (e) {
@@ -435,6 +438,35 @@ async function saveMaster(cfg, { entity, id, fields }) {
   return m ? { ok: true, id: parseInt(m[1], 10) } : { ok: false, error: 'save failed' };
 }
 
+/* Active/inactive on a master row is CENTRAL-authoritative — see the header of
+ * wb-sync.ps1. A bridge no longer pushes the status column over an existing
+ * central row, and the pull applies central's value, so the two terminals stop
+ * overwriting each other. That only works if the change itself is recorded
+ * centrally, which is what this does: the same row, matched by its NATURAL KEY
+ * (the name), because every bridge assigns its own ids. */
+const STATUS_SQL = {
+  products:     { table: 'Product',      nameCol: 'ProductName',   statusCol: 'IsActive' },
+  gates:        { table: 'Gate',         nameCol: 'GateName',      statusCol: 'IsActive' },
+  vehicles:     { table: 'Vehicle',      nameCol: 'VehicleNumber', statusCol: 'IsActive' },
+  accounts:     { table: 'Account',      nameCol: 'CompanyName',   statusCol: 'Active'   },
+  weighbridges: { table: 'WeightBridge', nameCol: 'ScaleName',     statusCol: 'IsActive' }
+};
+
+/** Set a master row's active flag on the given server, matched by name.
+ *  payload: { entity, name, active } -> { ok } | { ok:false, error } */
+async function setMasterStatus(cfg, { entity, name, active }) {
+  const def = STATUS_SQL[entity];
+  if (!def) return { ok: true, skipped: 'no status column for "' + entity + '"' };
+  const nm = String(name || '').trim();
+  if (!nm) return { ok: false, error: 'no name given' };
+  const sql = `UPDATE ${def.table} SET ${def.statusCol}=${active === false ? 0 : 1} ` +
+    `WHERE LTRIM(RTRIM(${def.nameCol})) = LTRIM(RTRIM(${S(nm)})); SELECT @@ROWCOUNT`;
+  const out = await runPayload(cfg, { mode: 'scalar', sql }, 25000);
+  const m = /OK:(-?\d+)/.exec(out || '');
+  if (!m) return { ok: false, error: 'status update failed' };
+  return { ok: true, rows: parseInt(m[1], 10) };
+}
+
 /**
  * Verify a username/password against the live UserMaster (legacy salt scheme).
  * Returns { ok, user:{ id, username, name, roleId } } or { ok:false, error }.
@@ -527,4 +559,4 @@ async function editWeights(cfg, p) {
   return { ok: true, changed: changes.length };
 }
 
-module.exports = { snapshot, nextTicketNo, saveTicket, saveVehicle, saveMaster, deleteMaster, authenticate, createSalt, saveImage, editWeights };
+module.exports = { snapshot, nextTicketNo, saveTicket, saveVehicle, saveMaster, setMasterStatus, deleteMaster, authenticate, createSalt, saveImage, editWeights };
